@@ -72,11 +72,12 @@ const ChangelogCards: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  const connectToRepository = async () => {
+  const connectToRepository = useCallback(async () => {
     setIsConnecting(true);
     setError("");
     
     try {
+      console.log(`Connecting to repository: ${gitlabHost}/${repository}`);
       const response = await fetch('/api/getRepository', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -96,8 +97,8 @@ const ChangelogCards: React.FC = () => {
       localStorage.setItem("projectId", data.projectId.toString());
       localStorage.setItem("projectPath", data.projectPath);
       
-      // Now fetch tags using GitLab API
-      await fetchTagsAndBranches(gitlabHost, data.projectId);
+      console.log(`Connected to project ID: ${data.projectId}`);
+      // Don't fetch tags here - will be done by the useEffect
       
     } catch (error) {
       console.error('Error connecting to repository:', error);
@@ -105,12 +106,13 @@ const ChangelogCards: React.FC = () => {
     }
     
     setIsConnecting(false);
-  };
+  }, [gitlabHost, repository]);
 
-  const fetchTagsAndBranches = async (host: string, id: number) => {
+  const fetchTagsAndBranches = useCallback(async (host: string, id: number) => {
     if (!id || !host) return;
     
     try {
+      console.log(`Fetching tags and branches for project ${id} on ${host}`);
       // Fetch tags
       const tagsResponse = await fetch('/api/getTags', {
         method: 'POST',
@@ -128,11 +130,12 @@ const ChangelogCards: React.FC = () => {
       
       const tagsData = await tagsResponse.json();
       setTagsAndBranches(tagsData.tagsAndBranches || []);
+      console.log(`Fetched ${tagsData.tagsAndBranches?.length || 0} tags and branches`);
     } catch (error) {
       console.error('Error fetching refs from GitLab API:', error);
       setError("Error fetching tags and branches from GitLab. Please check your connection and try again.");
     }
-  };
+  }, []);
 
   const loadStoredData = useCallback(() => {
     const storedCards = localStorage.getItem("cards");
@@ -154,25 +157,21 @@ const ChangelogCards: React.FC = () => {
     if (storedJiraRegex) setJiraRegex(storedJiraRegex);
     if (storedRepository) setRepository(storedRepository);
     if (storedGitlabHost) setGitlabHost(storedGitlabHost);
-    if (storedProjectId) setProjectId(parseInt(storedProjectId));
     if (storedProjectPath) setProjectPath(storedProjectPath);
 
     // Check if we're in the envview page 
     const isEnvView = typeof window !== 'undefined' && 
       window.location.pathname.includes('/envview');
     
-    // Auto-connect to repository if we have stored project info
-    if (storedProjectId && storedGitlabHost) {
+    // Set project ID last (since it might trigger data fetching)
+    if (storedProjectId) {
+      console.log("Setting project ID:", storedProjectId);
       setProjectId(parseInt(storedProjectId));
-      setProjectPath(storedProjectPath || '');
-      fetchTagsAndBranches(storedGitlabHost, parseInt(storedProjectId));
-    } else if (storedGitlabHost && storedRepository && !isEnvView) {
-      // Only auto-connect if not in envview
-      connectToRepository();
+      // Don't call fetchTagsAndBranches here - let the useEffect handle it
     }
-
+    
     setIsLoading(false);
-  }, [fetchTagsAndBranches, connectToRepository]);
+  }, []);
 
   const fetchCardData = useCallback(async (card: Card) => {
     const { id, fromCommit, toCommit } = card;
@@ -241,41 +240,18 @@ const ChangelogCards: React.FC = () => {
     }
   }, [projectId, gitlabHost, jiraRegex]);
 
+  // On initial mount, load data from localStorage
   useEffect(() => {
-    // Load stored data from localStorage
-    const storedCards = localStorage.getItem("cards");
-    const storedJiraHost = localStorage.getItem("jiraHost");
-    const storedJiraRegex = localStorage.getItem("jiraRegex");
-    const storedRepository = localStorage.getItem("repository");
-    const storedGitlabHost = localStorage.getItem("gitlabHost");
-    const storedProjectId = localStorage.getItem("projectId");
-    const storedProjectPath = localStorage.getItem("projectPath");
-
-    // Load cards
-    if (storedCards) {
-      const parsedCards = JSON.parse(storedCards);
-      console.log(`Loaded cards:`, parsedCards);
-      setCards(parsedCards.length > 0 ? parsedCards : initialCards);
-    } else {
-      setCards(initialCards);
+    loadStoredData();
+  }, [loadStoredData]);
+  
+  // When projectId changes, fetch tags and branches
+  useEffect(() => {
+    if (projectId && gitlabHost) {
+      console.log(`Project ID changed to ${projectId}, fetching tags and branches`);
+      fetchTagsAndBranches(gitlabHost, projectId);
     }
-    
-    // Load other settings
-    if (storedJiraHost) setJiraHost(storedJiraHost);
-    if (storedJiraRegex) setJiraRegex(storedJiraRegex);
-    if (storedRepository) setRepository(storedRepository);
-    if (storedGitlabHost) setGitlabHost(storedGitlabHost);
-    if (storedProjectPath) setProjectPath(storedProjectPath);
-    
-    // Set project ID last (since it might trigger data fetching)
-    if (storedProjectId) {
-      console.log("Setting project ID:", storedProjectId);
-      setProjectId(parseInt(storedProjectId));
-    }
-    
-    // Mark loading as complete
-    setIsLoading(false);
-  }, []);
+  }, [projectId, gitlabHost, fetchTagsAndBranches]);
 
   // Simplified function to fetch data for all cards in parallel
   const batchFetchAllCards = useCallback(async () => {
@@ -446,12 +422,9 @@ const ChangelogCards: React.FC = () => {
     
     console.log("Initial fetch triggered with projectId:", projectId);
     
-    // Use a flag to track if we've already fetched data
-    const hasFetched = sessionStorage.getItem("changelog_cards_batch_fetched");
-    
-    if (hasFetched !== "true") {
-      // Set the flag to prevent duplicate fetches
-      sessionStorage.setItem("changelog_cards_batch_fetched", "true");
+    // Check if we've already initialized fetching this component instance
+    if (!hasFetchedRef.current) {
+      hasFetchedRef.current = true;
       
       // Wait a short time to ensure all state is updated
       const timeoutId = setTimeout(() => {
@@ -470,7 +443,7 @@ const ChangelogCards: React.FC = () => {
         console.log("Fetch effect cleanup");
       };
     } else {
-      console.log("Skipping fetch - already fetched in this session");
+      console.log("Skipping fetch - already fetched in this component instance");
     }
   }, [isLoading, projectId]);
 
