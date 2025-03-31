@@ -90,7 +90,7 @@ const EnvironmentTimeline: React.FC = () => {
   // Define leader configurations
   const leaderConfigs = {
     'sit1': ['sit1-val', 'sit1-dep', 'staging-dep', 'prod-val'],
-    'sit2': ['sit2-val', 'sit2-dep']
+    'sit2': ['sit2-val', 'sit2-dep', 'staging-dep', 'prod-val']
   };
   
   // Filter environments based on selected leader
@@ -305,6 +305,9 @@ const EnvironmentTimeline: React.FC = () => {
   };
 
   const fetchTimelineData = async () => {
+    // Clear previous data when changing configurations
+    setTimelineData({});
+    setProcessedData({});
     setLoading(true);
     setError(null);
     try {
@@ -325,7 +328,8 @@ const EnvironmentTimeline: React.FC = () => {
         projectId = parseInt(storedProjectId);
       }
       
-      const promises = environments.map(env =>
+      // Always fetch ALL environments data to keep both SIT1 and SIT2 data cached
+      const promises = allEnvironments.map(env =>
         fetch('/api/getTimeline', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -341,17 +345,21 @@ const EnvironmentTimeline: React.FC = () => {
             throw new Error(`Error fetching timeline for ${env.display}: ${res.status}`);
           }
           return res.json();
-        })
+        }).then(result => ({
+          envId: env.id,
+          data: result.timeline
+        }))
       );
 
       const results = await Promise.all(promises);
-      const newTimelineData = results.reduce<TimelineData>((acc, result, index) => {
-        acc[environments[index].id] = result.timeline;
+      const newTimelineData = results.reduce<TimelineData>((acc, result) => {
+        acc[result.envId] = result.data;
         return acc;
       }, {});
 
       setTimelineData(newTimelineData);
       processTimelineData(newTimelineData);
+      console.log(`Fetched timeline data for ALL environments: ${allEnvironments.map(e => e.id).join(', ')}`);
     } catch (err) {
       setError('Failed to fetch timeline data: ' + (err instanceof Error ? err.message : String(err)));
       console.error(err);
@@ -364,7 +372,7 @@ const EnvironmentTimeline: React.FC = () => {
     fetchTimelineData();
     const interval = setInterval(fetchTimelineData, 10 * 60 * 1000); // Update every 10 minutes
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedLeader, alignByCommit]);
 
   const TimelineCard: React.FC<{ deployment: DeploymentData; envDisplay: string }> = ({ deployment, envDisplay }) => {
     const hasMoreTickets = deployment.tickets.length > MAX_VISIBLE_ITEMS;
