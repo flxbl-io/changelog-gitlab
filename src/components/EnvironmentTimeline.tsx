@@ -221,77 +221,50 @@ const EnvironmentTimeline: React.FC = () => {
       throw new Error(`Missing date part in tag: ${tag}`);
     }
     
-    // Check if the date part has the expected format
+    // Check if the date part has the expected format ENV_TYPE_DDMMYYYY-HHMMSS
     const dateTimeParts = datePart.split('-');
     if (dateTimeParts.length !== 2) {
-      // Try to handle single part date format as a fallback
-      console.warn(`Tag ${tag} doesn't have standard date-time format, attempting fallback parsing`);
-      
-      // If it's just a raw date string without time, try to parse it
-      if (datePart.length === 8) { // YYYYMMDD or DDMMYYYY
-        let year, month, day;
-        
-        // Try to detect format
-        if (/^20\d{2}/.test(datePart)) { // YYYYMMDD
-          year = parseInt(datePart.substring(0, 4));
-          month = parseInt(datePart.substring(4, 6)) - 1; // JS months are 0-indexed
-          day = parseInt(datePart.substring(6, 8));
-        } else { // DDMMYYYY
-          day = parseInt(datePart.substring(0, 2));
-          month = parseInt(datePart.substring(2, 4)) - 1; // JS months are 0-indexed
-          year = parseInt(datePart.substring(4, 8));
-        }
-        
-        // Basic validation to avoid invalid dates (e.g., month 13)
-        if (month < 0 || month > 11 || day < 1 || day > 31) {
-          throw new Error(`Invalid date values in tag: ${tag}`);
-        }
-        
-        return new Date(year, month, day);
-      }
-      
-      throw new Error(`Invalid date-time format in tag: ${tag}`);
+      throw new Error(`Invalid date-time format in tag: ${tag}, expected format ENV_TYPE_DDMMYYYY-HHMMSS`);
     }
     
     const [datePortion, timePortion] = dateTimeParts;
     
-    // Handle both YYYYMMDD and DDMMYYYY formats
+    // Only handle DDMMYYYY format as that's the standard format for our tags
     let day = 0, month = 0, year = 0;
     let hour = 0, minute = 0, second = 0;
     
     try {
-      // YYYYMMDD format
-      if (datePortion.length === 8 && /^20\d{2}/.test(datePortion)) {
-        year = parseInt(datePortion.substring(0, 4));
-        month = parseInt(datePortion.substring(4, 6)) - 1;  // JS months are 0-indexed
-        day = parseInt(datePortion.substring(6, 8));
-      } 
-      // DDMMYYYY format
-      else if (datePortion.length === 8) {
-        day = parseInt(datePortion.substring(0, 2));
-        month = parseInt(datePortion.substring(2, 4)) - 1;  // JS months are 0-indexed
-        year = parseInt(datePortion.substring(4, 8));
-      } 
-      else {
-        throw new Error(`Unknown date format: ${datePortion}`);
+      if (datePortion.length !== 8) {
+        throw new Error(`Invalid date format in tag: ${tag}, expected DDMMYYYY format`);
       }
       
-      // Parse time portion if it exists and has the right format
+      // Parse DDMMYYYY format
+      day = parseInt(datePortion.substring(0, 2));
+      month = parseInt(datePortion.substring(2, 4)) - 1;  // JS months are 0-indexed
+      year = parseInt(datePortion.substring(4, 8));
+      
+      // Parse time portion HHMMSS
       if (timePortion && timePortion.length === 6) {
         hour = parseInt(timePortion.substring(0, 2));
         minute = parseInt(timePortion.substring(2, 4));
         second = parseInt(timePortion.substring(4, 6));
+      } else {
+        throw new Error(`Invalid time format in tag: ${tag}, expected HHMMSS format`);
       }
       
-      // Basic validation to avoid invalid dates (e.g., month 13)
+      // Basic validation to avoid invalid dates
       if (month < 0 || month > 11 || day < 1 || day > 31) {
-        throw new Error(`Invalid date values in tag: ${tag} (year=${year}, month=${month+1}, day=${day})`);
+        throw new Error(`Invalid date values in tag: ${tag} (day=${day}, month=${month+1}, year=${year})`);
       }
       
-      return new Date(year, month, day, hour, minute, second);
+      // Create date object using the parsed components
+      const parsedDate = new Date(year, month, day, hour, minute, second);
+      console.log(`Parsed tag ${tag} as ${parsedDate.toLocaleString('en-AU')}`);
+      
+      return parsedDate;
     } catch (error) {
       console.error(`Error parsing date from tag ${tag}:`, error);
-      // Return today as a fallback to avoid crashing
+      // Return today as a fallback to avoid crashing, but log the error
       return new Date();
     }
   };
