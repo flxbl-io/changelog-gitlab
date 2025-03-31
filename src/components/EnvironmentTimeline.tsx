@@ -133,38 +133,90 @@ const EnvironmentTimeline: React.FC = () => {
   
   // Handle leader selection change
   const handleLeaderChange = (leader: string) => {
+    // Set loading state for leader change
+    setIsLeaderChanging(true);
+    
+    // Update the leader selection
     setSelectedLeader(leader);
     localStorage.setItem("selectedLeader", leader);
+    
+    // The useEffect with [selectedLeader, alignByCommit] dependency will handle the data fetch
   };
   
   // Handle alignment toggle
   const handleAlignToggle = () => {
+    // Show loading state
+    setIsLeaderChanging(true);
+    
     const newValue = !alignByCommit;
+    
+    // We need to switch the value before processing
     setAlignByCommit(newValue);
     localStorage.setItem("alignByCommit", String(newValue));
+    
+    // If we already have data, just reprocess it with the new view mode
+    if (timelineData && Object.keys(timelineData).length > 0) {
+      setTimeout(() => {
+        // Use timeout to ensure the alignByCommit state has updated
+        processTimelineData(timelineData);
+        setIsLeaderChanging(false);
+      }, 100);
+    }
+    // Otherwise, useEffect will handle fetching new data
   };
 
   const parseDate = (tag: string): Date => {
-    const datePart = tag.split('_')[2];
-    let day = 0, month = 0, year = 0;
+    const tagParts = tag.split('_');
+    if (tagParts.length < 3) {
+      throw new Error(`Invalid tag format: ${tag}`);
+    }
     
-    // Handle both date formats, but keep original time
-    if (datePart.startsWith('2024')) {
-      year = parseInt(datePart.substring(0, 4));
-      month = parseInt(datePart.substring(4, 6)) - 1;
-      day = parseInt(datePart.substring(6, 8));
-      const hour = parseInt(datePart.substring(9, 11));
-      const minute = parseInt(datePart.substring(11, 13));
-      const second = parseInt(datePart.substring(13, 15));
+    const datePart = tagParts[2];
+    if (!datePart) {
+      throw new Error(`Missing date part in tag: ${tag}`);
+    }
+    
+    // Check if the date part has the expected format
+    const dateTimeParts = datePart.split('-');
+    if (dateTimeParts.length !== 2) {
+      throw new Error(`Invalid date-time format in tag: ${tag}`);
+    }
+    
+    const [datePortion, timePortion] = dateTimeParts;
+    
+    // Handle both YYYYMMDD and DDMMYYYY formats
+    let day = 0, month = 0, year = 0;
+    let hour = 0, minute = 0, second = 0;
+    
+    try {
+      // YYYYMMDD format
+      if (datePortion.length === 8 && /^20\d{2}/.test(datePortion)) {
+        year = parseInt(datePortion.substring(0, 4));
+        month = parseInt(datePortion.substring(4, 6)) - 1;  // JS months are 0-indexed
+        day = parseInt(datePortion.substring(6, 8));
+      } 
+      // DDMMYYYY format
+      else if (datePortion.length === 8) {
+        day = parseInt(datePortion.substring(0, 2));
+        month = parseInt(datePortion.substring(2, 4)) - 1;  // JS months are 0-indexed
+        year = parseInt(datePortion.substring(4, 8));
+      } 
+      else {
+        throw new Error(`Unknown date format: ${datePortion}`);
+      }
+      
+      // Parse time portion if it exists and has the right format
+      if (timePortion && timePortion.length === 6) {
+        hour = parseInt(timePortion.substring(0, 2));
+        minute = parseInt(timePortion.substring(2, 4));
+        second = parseInt(timePortion.substring(4, 6));
+      }
+      
       return new Date(year, month, day, hour, minute, second);
-    } else {
-      day = parseInt(datePart.substring(0, 2));
-      month = parseInt(datePart.substring(2, 4)) - 1;
-      year = parseInt(datePart.substring(4, 8));
-      const hour = parseInt(datePart.substring(9, 11));
-      const minute = parseInt(datePart.substring(11, 13));
-      const second = parseInt(datePart.substring(13, 15));
-      return new Date(year, month, day, hour, minute, second);
+    } catch (error) {
+      console.error(`Error parsing date from tag ${tag}:`, error);
+      // Return today as a fallback to avoid crashing
+      return new Date();
     }
   };
 
@@ -206,6 +258,14 @@ const EnvironmentTimeline: React.FC = () => {
   }
 
   const processTimelineData = (data: TimelineData) => {
+    // Skip processing if there's no data
+    if (!data || Object.keys(data).length === 0) {
+      console.log("No data to process in processTimelineData");
+      return;
+    }
+    
+    console.log(`Processing timeline data with ${Object.keys(data).length} environments, alignByCommit=${alignByCommit}`);
+    
     if (alignByCommit) {
       // For commit alignment with date grouping
       // First, collect all deployments by commit ID
@@ -340,18 +400,31 @@ const EnvironmentTimeline: React.FC = () => {
       // Fill in the deployments
       Object.entries(data).forEach(([envId, envData]) => {
         Object.entries(envData).forEach(([tag, deployment]) => {
-          const date = parseDate(tag);
-          const dateKey = getDateKey(date);
+          // Validate tag format before processing
+          const tagParts = tag.split('_');
           
-          if (processed[dateKey]) {  // Only process if date is within our range
-            if (!processed[dateKey][envId]) {
-              processed[dateKey][envId] = [] as DeploymentData[];
+          // Check if tag has the expected format: ENV_TYPE_DATE-TIME
+          if (tagParts.length < 3) {
+            console.warn(`Skipping tag with invalid format: ${tag}`);
+            return;
+          }
+          
+          try {
+            const date = parseDate(tag);
+            const dateKey = getDateKey(date);
+            
+            if (processed[dateKey]) {  // Only process if date is within our range
+              if (!processed[dateKey][envId]) {
+                processed[dateKey][envId] = [] as DeploymentData[];
+              }
+              (processed[dateKey][envId] as DeploymentData[]).push({
+                ...deployment,
+                tag,
+                date, // Keep original timestamp
+              });
             }
-            (processed[dateKey][envId] as DeploymentData[]).push({
-              ...deployment,
-              tag,
-              date, // Keep original timestamp
-            });
+          } catch (error) {
+            console.warn(`Error processing tag ${tag}:`, error);
           }
         });
       });
@@ -400,6 +473,10 @@ const EnvironmentTimeline: React.FC = () => {
 
   // State to track if refresh is in progress on server
   const [isRefreshing, setIsRefreshing] = useState(false);
+  // State to track if this is a first load
+  const [isFirstLoad, setIsFirstLoad] = useState(true);
+  // State to track when leader is changing
+  const [isLeaderChanging, setIsLeaderChanging] = useState(false);
   
   // Function to force refresh data by clearing cache state
   const forceRefresh = () => {
@@ -527,12 +604,17 @@ const EnvironmentTimeline: React.FC = () => {
 
       setTimelineData(newTimelineData);
       processTimelineData(newTimelineData);
+      // Mark that we've completed the first load
+      setIsFirstLoad(false);
+      // Reset leader changing state
+      setIsLeaderChanging(false);
       console.log(`Fetched timeline data for ALL environments: ${allEnvironments.map(e => e.id).join(', ')}`);
     } catch (err) {
       setError('Failed to fetch timeline data: ' + (err instanceof Error ? err.message : String(err)));
       console.error(err);
-      // Reset refreshing state on error
+      // Reset states on error
       setIsRefreshing(false);
+      setIsLeaderChanging(false);
     } finally {
       setLoading(false);
     }
@@ -569,6 +651,9 @@ const EnvironmentTimeline: React.FC = () => {
             processTimelineData(cachedData.data);
             hasInitialFetchRef.current = true;
             
+            // Since we loaded from cache, this is not a first load
+            setIsFirstLoad(false);
+            
             // Set loading to false since we've restored from cache
             setLoading(false);
             return;
@@ -596,10 +681,18 @@ const EnvironmentTimeline: React.FC = () => {
     };
   }, []);
   
+  // Keep track of the previous leader value
+  const prevLeaderRef = useRef(selectedLeader);
+  
   // Fetch data only when parameters change or on initial render
   useEffect(() => {
     // Check if this is a page reload vs a parameter change
     const isInitialRender = !hasInitialFetchRef.current;
+    // Check if only the alignment changed or if the leader changed too
+    const isLeaderChange = prevLeaderRef.current !== selectedLeader;
+    
+    // Update the previous leader ref
+    prevLeaderRef.current = selectedLeader;
     
     if (isInitialRender) {
       console.log('Initial timeline data fetch');
@@ -612,10 +705,13 @@ const EnvironmentTimeline: React.FC = () => {
       } else {
         console.log('Already loaded from cache, skipping initial fetch');
       }
-    } else {
-      // This is a parameter change, always fetch
-      console.log('Timeline parameters changed, refetching data');
+    } else if (isLeaderChange) {
+      // Only fetch new data if the leader actually changed
+      console.log('Leader changed, fetching new data');
       fetchTimelineData(false);
+    } else {
+      // This is just a view mode change, already handled by handleAlignToggle
+      console.log('View mode changed, no need to refetch');
     }
     
     // Set up periodic refresh
@@ -731,6 +827,11 @@ const EnvironmentTimeline: React.FC = () => {
           "Refreshing data from the server..." : 
           "Loading from cache when available for better performance."}
       </p>
+      {loading && isFirstLoad && (
+        <p className="text-xs text-amber-600 mt-2">
+          First load may take longer while server cache is built. Subsequent loads will be faster.
+        </p>
+      )}
     </div>
   );
 
@@ -860,43 +961,62 @@ const EnvironmentTimeline: React.FC = () => {
       <div className="mb-6 flex flex-wrap items-center gap-4">
         <div className="flex items-center">
           <span className="mr-2 font-medium">Leader:</span>
-          <select 
-            className="px-3 py-2 border rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            value={selectedLeader}
-            onChange={(e) => handleLeaderChange(e.target.value)}
-          >
-            {Object.keys(leaderConfigs).map(leader => (
-              <option key={leader} value={leader}>{leader.toUpperCase()}</option>
-            ))}
-          </select>
+          <div className="relative">
+            <select 
+              className={`px-3 py-2 border rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                isLeaderChanging ? 'border-blue-500 text-gray-400' : ''
+              }`}
+              value={selectedLeader}
+              onChange={(e) => handleLeaderChange(e.target.value)}
+              disabled={isLeaderChanging}
+            >
+              {Object.keys(leaderConfigs).map(leader => (
+                <option key={leader} value={leader}>{leader.toUpperCase()}</option>
+              ))}
+            </select>
+            {isLeaderChanging && (
+              <div className="absolute right-0 top-0 h-full flex items-center pr-2">
+                <div className="animate-spin h-4 w-4 border-2 border-blue-500 border-t-transparent rounded-full"></div>
+              </div>
+            )}
+          </div>
           <button 
             onClick={() => handleEditLeaderConfig(selectedLeader)}
             className="ml-2 px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded-md text-sm"
+            disabled={isLeaderChanging}
           >
             Edit
           </button>
           <button 
             onClick={() => setIsCreating(true)}
             className="ml-2 px-3 py-2 bg-green-100 hover:bg-green-200 rounded-md text-sm text-green-800"
+            disabled={isLeaderChanging}
           >
             New
           </button>
+          {isLeaderChanging && (
+            <span className="ml-2 text-xs text-blue-600">Loading data for selected configuration...</span>
+          )}
         </div>
         
         <div className="flex items-center">
-          <label className="flex items-center cursor-pointer">
+          <label className={`flex items-center ${isLeaderChanging ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
             <div className="relative">
               <input 
                 type="checkbox" 
                 className="sr-only" 
                 checked={alignByCommit}
                 onChange={handleAlignToggle}
+                disabled={isLeaderChanging}
               />
               <div className={`block w-14 h-8 rounded-full ${alignByCommit ? 'bg-blue-600' : 'bg-gray-300'}`}></div>
               <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition ${alignByCommit ? 'transform translate-x-6' : ''}`}></div>
             </div>
-            <div className="ml-3 text-gray-700 font-medium">
+            <div className="ml-3 text-gray-700 font-medium flex items-center">
               {alignByCommit ? "Commit View (Default)" : "Date View"}
+              {isLeaderChanging && (
+                <div className="ml-2 animate-spin h-3 w-3 border-2 border-blue-500 border-t-transparent rounded-full"></div>
+              )}
             </div>
           </label>
         </div>
@@ -904,9 +1024,9 @@ const EnvironmentTimeline: React.FC = () => {
         <div className="flex items-center ml-auto">
           <button 
             onClick={forceRefresh}
-            className={`flex items-center px-3 py-2 ${loading || isRefreshing ? 'bg-gray-200 cursor-not-allowed' : 'bg-blue-100 hover:bg-blue-200'} rounded-md text-sm ${loading || isRefreshing ? 'text-gray-600' : 'text-blue-800'}`}
-            title={isRefreshing ? "Refresh already in progress" : "Force refresh data"}
-            disabled={loading || isRefreshing}
+            className={`flex items-center px-3 py-2 ${loading || isRefreshing || isLeaderChanging ? 'bg-gray-200 cursor-not-allowed' : 'bg-blue-100 hover:bg-blue-200'} rounded-md text-sm ${loading || isRefreshing || isLeaderChanging ? 'text-gray-600' : 'text-blue-800'}`}
+            title={isRefreshing ? "Refresh already in progress" : isLeaderChanging ? "Leader change in progress" : "Force refresh data"}
+            disabled={loading || isRefreshing || isLeaderChanging}
           >
             <RefreshCw className={`mr-2 h-4 w-4 ${loading || isRefreshing ? 'animate-spin' : ''}`} />
             {loading ? 'Loading...' : isRefreshing ? 'Server Refreshing...' : 'Refresh Data'}
