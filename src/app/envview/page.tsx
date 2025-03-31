@@ -73,7 +73,7 @@ export default function Page() {
           </div>
         </div>
       ) : (
-        <ChangelogCards key={connectionState} />
+        <ChangelogCards />
       )}
     </main>
   );

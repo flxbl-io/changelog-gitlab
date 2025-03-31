@@ -150,22 +150,22 @@ const ChangelogCards: React.FC = () => {
     if (storedProjectId) setProjectId(parseInt(storedProjectId));
     if (storedProjectPath) setProjectPath(storedProjectPath);
 
+    // Check if we're in the envview page 
+    const isEnvView = typeof window !== 'undefined' && 
+      window.location.pathname.includes('/envview');
+    
     // Auto-connect to repository if we have stored project info
     if (storedProjectId && storedGitlabHost) {
       setProjectId(parseInt(storedProjectId));
       setProjectPath(storedProjectPath || '');
       fetchTagsAndBranches(storedGitlabHost, parseInt(storedProjectId));
-    } else if (storedGitlabHost && storedRepository) {
-      // Check if we're already trying to connect from the parent component
-      const isConnectingFromParent = sessionStorage.getItem("envview_auto_connect_attempted") === "true";
-      
-      if (!isConnectingFromParent) {
-        connectToRepository();
-      }
+    } else if (storedGitlabHost && storedRepository && !isEnvView) {
+      // Only auto-connect if not in envview
+      connectToRepository();
     }
 
     setIsLoading(false);
-  }, []);
+  }, [fetchTagsAndBranches, connectToRepository]);
 
   const fetchCardData = useCallback(async (card: Card) => {
     const { id, fromCommit, toCommit } = card;
@@ -235,7 +235,38 @@ const ChangelogCards: React.FC = () => {
   }, [projectId, gitlabHost, jiraRegex]);
 
   useEffect(() => {
-    loadStoredData();
+    // In envview, load data without triggering auto-connect
+    const isEnvView = typeof window !== 'undefined' && 
+      window.location.pathname.includes('/envview');
+      
+    if (isEnvView) {
+      // Don't auto-connect in envview page, just load card data
+      const storedCards = localStorage.getItem("cards");
+      const storedJiraHost = localStorage.getItem("jiraHost");
+      const storedJiraRegex = localStorage.getItem("jiraRegex");
+      const storedRepository = localStorage.getItem("repository");
+      const storedGitlabHost = localStorage.getItem("gitlabHost");
+      const storedProjectId = localStorage.getItem("projectId");
+      const storedProjectPath = localStorage.getItem("projectPath");
+  
+      if (storedCards) {
+        const parsedCards = JSON.parse(storedCards);
+        setCards(parsedCards.length > 0 ? parsedCards : initialCards);
+      } else {
+        setCards(initialCards);
+      }
+      if (storedJiraHost) setJiraHost(storedJiraHost);
+      if (storedJiraRegex) setJiraRegex(storedJiraRegex);
+      if (storedRepository) setRepository(storedRepository);
+      if (storedGitlabHost) setGitlabHost(storedGitlabHost);
+      if (storedProjectId) setProjectId(parseInt(storedProjectId));
+      if (storedProjectPath) setProjectPath(storedProjectPath);
+      
+      setIsLoading(false);
+    } else {
+      // Normal behavior for other pages
+      loadStoredData();
+    }
   }, [loadStoredData]);
 
   // New function to fetch data for all cards in parallel
