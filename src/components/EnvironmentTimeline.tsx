@@ -90,7 +90,7 @@ const EnvironmentTimeline: React.FC = () => {
   // Define leader configurations
   const leaderConfigs = {
     'sit1': ['sit1-val', 'sit1-dep', 'staging-dep', 'prod-val'],
-    'sit2': ['sit2-val', 'sit2-dep', 'staging-dep', 'prod-val']
+    'sit2': ['sit2-val', 'sit2-dep']
   };
   
   // Filter environments based on selected leader
