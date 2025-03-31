@@ -1052,57 +1052,80 @@ const EnvironmentTimeline: React.FC = () => {
               </div>
               
               {alignByCommit ? (
-                // Commit-aligned view - group deployments by commit within each date
-                dateCommits.map((commitId, commitIndex) => {
-                  // Find any deployment with this commit to show its details
-                  let commitDisplayData = null;
-                  for (const env of environments) {
-                    const deployments = (processedData[dateKey]?.[env.id] as DeploymentData[]) || [];
-                    const matchingDep = deployments.find(d => d.__commitId === commitId);
-                    if (matchingDep) {
-                      commitDisplayData = matchingDep;
-                      break;
-                    }
-                  }
-                  
-                  if (!commitDisplayData) return null;
-                  
-                  return (
-                    <div key={`${dateKey}-${commitId}`} 
-                        className={`grid gap-4 border-b border-gray-200 py-2 ${
-                          commitIndex % 2 === 0 ? 'bg-gray-50' : 'bg-white'
-                        }`}
-                        style={{ 
-                          gridTemplateColumns: `1fr ${environments.map(() => '2fr').join(' ')}` 
-                        }}>
-                      {/* Commit ID cell */}
-                      <div className="flex items-center p-4">
-                        <span className="text-sm font-mono bg-gray-100 p-1 rounded text-gray-800">
-                          {commitId.substring(0, 8)}
-                        </span>
-                      </div>
-                      
-                      {/* Environment cells */}
-                      {environments.map((env) => {
-                        // Get only deployments for this commit ID
-                        const commitDeployments = ((processedData[dateKey]?.[env.id] as DeploymentData[]) || [])
-                          .filter(d => d.__commitId === commitId);
-                          
-                        return (
-                          <div key={`${dateKey}-${commitId}-${env.id}`} className="p-4">
-                            {commitDeployments.map((deployment, index) => (
-                              <TimelineCard
-                                key={`${deployment.tag}-${index}`}
-                                deployment={deployment}
-                                envDisplay={env.display}
-                              />
-                            ))}
-                          </div>
-                        );
-                      })}
+                // Commit-aligned view with commits grouped by date
+                <>
+                  {/* Header row similar to date-based view */}
+                  <div className="grid gap-4 py-2 bg-gray-50 border-b border-gray-200"
+                      style={{ 
+                        gridTemplateColumns: `1fr ${environments.map(() => '2fr').join(' ')}` 
+                      }}>
+                    <div className="p-4 font-medium text-gray-600">
+                      Commit
                     </div>
-                  );
-                })
+                    
+                    {/* Environment headers */}
+                    {environments.map((env, envIndex) => (
+                      <div key={`${dateKey}-header-${env.id}`} 
+                          className={`p-3 ${
+                            envIndex % 2 === 0 ? 'bg-blue-50' : 'bg-blue-100'
+                          }`}>
+                        <span className="font-medium">{env.display}</span>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  {/* Commits rows */}
+                  {dateCommits.map((commitId, commitIndex) => {
+                    // Find any deployment with this commit to show its details
+                    let commitDisplayData = null;
+                    for (const env of environments) {
+                      const deployments = (processedData[dateKey]?.[env.id] as DeploymentData[]) || [];
+                      const matchingDep = deployments.find(d => d.__commitId === commitId);
+                      if (matchingDep) {
+                        commitDisplayData = matchingDep;
+                        break;
+                      }
+                    }
+                    
+                    if (!commitDisplayData) return null;
+                    
+                    return (
+                      <div key={`${dateKey}-${commitId}`} 
+                          className={`grid gap-4 border-b border-gray-200 py-2 ${
+                            commitIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'
+                          }`}
+                          style={{ 
+                            gridTemplateColumns: `1fr ${environments.map(() => '2fr').join(' ')}` 
+                          }}>
+                        {/* Commit ID cell */}
+                        <div className="flex items-center p-4">
+                          <span className="text-sm font-mono bg-gray-100 p-1 rounded text-gray-800">
+                            {commitId.substring(0, 8)}
+                          </span>
+                        </div>
+                        
+                        {/* Environment cells */}
+                        {environments.map((env) => {
+                          // Get only deployments for this commit ID
+                          const commitDeployments = ((processedData[dateKey]?.[env.id] as DeploymentData[]) || [])
+                            .filter(d => d.__commitId === commitId);
+                            
+                          return (
+                            <div key={`${dateKey}-${commitId}-${env.id}`} className="p-4">
+                              {commitDeployments.map((deployment, index) => (
+                                <TimelineCard
+                                  key={`${deployment.tag}-${index}`}
+                                  deployment={deployment}
+                                  envDisplay={env.display}
+                                />
+                              ))}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </>
               ) : (
                 // Traditional date-based view - all deployments grouped by environment only
                 <div className="grid gap-4 py-2"
