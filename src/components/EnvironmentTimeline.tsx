@@ -58,7 +58,7 @@ const EnvironmentTimeline: React.FC = () => {
   const [gitlabHost, setGitlabHost] = useState("gitlab.apps.ndia.gov.au");
   const [jiraRegex, setJiraRegex] = useState("(PSS-d+)|(P2B-d+)|(SFUAT-d+)|(DIPMO-d+)|(P2CL-d+)|(GPO-d+)|(CS-d+)|(OCM-d+)|(OCM-d+)|(TS-d+)|");
   const [selectedLeader, setSelectedLeader] = useState<string>("sit1");
-  const [alignByCommit, setAlignByCommit] = useState<boolean>(false);
+  const [alignByCommit, setAlignByCommit] = useState<boolean>(true);
   
   // Leader config editing states
   const [isEditing, setIsEditing] = useState(false);
@@ -83,7 +83,14 @@ const EnvironmentTimeline: React.FC = () => {
     if (storedGitlabHost) setGitlabHost(storedGitlabHost);
     if (storedJiraRegex) setJiraRegex(storedJiraRegex);
     if (storedLeader) setSelectedLeader(storedLeader);
-    if (storedAlignByCommit) setAlignByCommit(storedAlignByCommit === 'true');
+    
+    // For alignment settings, only override the default if explicitly set
+    if (storedAlignByCommit !== null) {
+      setAlignByCommit(storedAlignByCommit === 'true');
+    } else {
+      // Set default in localStorage for new users
+      localStorage.setItem("alignByCommit", "true");
+    }
   }, []);
 
   // Define all environments
@@ -99,7 +106,7 @@ const EnvironmentTimeline: React.FC = () => {
   // Define leader configurations - made configurable
   const [leaderConfigs, setLeaderConfigs] = useState<Record<string, string[]>>({
     'sit1': ['sit1-val', 'sit1-dep', 'staging-dep', 'prod-val'],
-    'sit2': ['sit2-val', 'sit2-dep', 'staging-dep', 'prod-val']
+    'sit2': ['sit2-val', 'sit2-dep']
   });
   
   // Load leader configurations from localStorage
@@ -680,7 +687,7 @@ const EnvironmentTimeline: React.FC = () => {
               <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition ${alignByCommit ? 'transform translate-x-6' : ''}`}></div>
             </div>
             <div className="ml-3 text-gray-700 font-medium">
-              Align by Commit ID
+              {alignByCommit ? "Commit View (Default)" : "Date View"}
             </div>
           </label>
         </div>
