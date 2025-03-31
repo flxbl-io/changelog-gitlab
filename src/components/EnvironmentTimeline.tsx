@@ -210,6 +210,7 @@ const EnvironmentTimeline: React.FC = () => {
     });
   };
 
+  // Date parser for SIT1_DEP_DDMMYYYY-HHMMSS format
   const parseDate = (tag: string): Date => {
     try {
       const tagParts = tag.split('_');
@@ -222,7 +223,7 @@ const EnvironmentTimeline: React.FC = () => {
         throw new Error(`Missing date part in tag: ${tag}`);
       }
       
-      // Example format: SIT1_DEP_20032025-125808 (DDMMYYYY-HHMMSS)
+      // Format should be DDMMYYYY-HHMMSS
       const dateTimeParts = datePart.split('-');
       if (dateTimeParts.length !== 2) {
         throw new Error(`Invalid date-time format in tag: ${tag}, expected format ENV_TYPE_DDMMYYYY-HHMMSS`);
@@ -268,35 +269,11 @@ const EnvironmentTimeline: React.FC = () => {
       // Create date object
       const parsedDate = new Date(year, month, day, hour, minute, second);
       
-      // Extra validation - check if the date is valid (handles edge cases like February 30th)
-      if (parsedDate.getFullYear() !== year || 
-          parsedDate.getMonth() !== month || 
-          parsedDate.getDate() !== day) {
-        throw new Error(`Resulting date is invalid for tag: ${tag}, parsed as ${parsedDate.toLocaleString('en-AU')}`);
-      }
-      
       return parsedDate;
     } catch (error) {
-      // Log the error but allow the app to continue
       console.error(`Error parsing date from tag ${tag}:`, error);
-      
-      // Try one more basic format attempt without detailed validation
-      try {
-        const parts = tag.split('_')[2].split('-');
-        const datePart = parts[0];
-        const timePart = parts[1] || "000000";
-        
-        // Extract components with basic sanity checks
-        const day = Math.min(31, Math.max(1, parseInt(datePart.substring(0, 2)) || 1));
-        const month = Math.min(11, Math.max(0, (parseInt(datePart.substring(2, 4)) || 1) - 1));
-        const year = parseInt(datePart.substring(4, 8)) || new Date().getFullYear();
-        
-        return new Date(year, month, day);
-      } catch (e) {
-        console.error(`Even basic date parsing failed for tag ${tag}:`, e);
-        // Return current date as fallback to avoid crashing
-        return new Date();
-      }
+      // Return today as a fallback
+      return new Date();
     }
   };
 
@@ -316,30 +293,7 @@ const EnvironmentTimeline: React.FC = () => {
       dates.push(`${String(date.getDate()).padStart(2, '0')}${String(date.getMonth() + 1).padStart(2, '0')}`);
     }
     
-    // Sort dates chronologically (oldest to newest) for better display
-    const sortedDates = [...dates].sort((a, b) => {
-      // Convert DDMM to comparable format
-      // Add current year to make the comparison valid
-      const yearStr = new Date().getFullYear().toString();
-      
-      // Create dates for comparison (using current year)
-      const dateA = new Date(
-        parseInt(yearStr),
-        parseInt(a.substring(2, 4)) - 1, // Month is 0-indexed
-        parseInt(a.substring(0, 2))
-      );
-      
-      const dateB = new Date(
-        parseInt(yearStr),
-        parseInt(b.substring(2, 4)) - 1, // Month is 0-indexed
-        parseInt(b.substring(0, 2))
-      );
-      
-      // Sort descending (newest first)
-      return dateB.getTime() - dateA.getTime();
-    });
-    
-    return sortedDates;
+    return dates;
   };
 
   const formatDate = (date: Date): string => {
@@ -748,63 +702,45 @@ const EnvironmentTimeline: React.FC = () => {
     fetchTimelineData(bypassServerCache);
   };
 
-  // Significantly improved fetch function with better state management
+  // Simplified fetch function with clear state management
   const fetchTimelineData = async (forceBypass = false) => {
-    // Safety check - if we're already in a loading state and not forcing, just return
-    if ((loading || isRefreshing) && !forceBypass) {
-      console.log("Already loading data, skipping redundant fetch");
-      return;
-    }
+    // Set state to loading
+    setLoading(true);
+    setError(null);
     
-    // Check if we recently fetched data (to prevent unnecessary refetches on page refresh)
-    // Skip the check if forceBypass is true
+    // Rate limit check for non-forced fetches (prevent multiple rapid fetches)
     if (!forceBypass) {
       const lastFetchTime = sessionStorage.getItem("timeline_last_fetch_time");
-      const now = Date.now();
-      
-      // Use shorter cooldown (15 seconds) unless we're forcing
-      if (lastFetchTime && now - parseInt(lastFetchTime) < 15000) { // Within last 15 seconds
-        console.log(`Skipping fetch, last fetch was too recent (${Math.round((now - parseInt(lastFetchTime)) / 1000)}s ago)`);
-        // Still maintain UI state for consistency
-        setIsLeaderChanging(false);
-        setLoading(false);  // Ensure loading state is reset
+      if (lastFetchTime && (Date.now() - parseInt(lastFetchTime)) < 5000) {
+        console.log("Skipping fetch - another fetch was triggered recently");
+        setLoading(false);
         return;
       }
     }
     
-    // If we get here, we're actually fetching
-    console.log(`Fetching timeline data for ${selectedLeader} environments (force=${forceBypass})`);
-    
-    // Record this fetch attempt with current timestamp
+    // Record fetch attempt time
     sessionStorage.setItem("timeline_last_fetch_time", Date.now().toString());
     
-    // Clear previous data when changing configurations
-    setTimelineData({});
-    setProcessedData({});
-    setLoading(true);
-    setError(null);
+    console.log(`Fetching timeline data for ${selectedLeader} environments${forceBypass ? ' (forced)' : ''}`);
+    
     try {
-      // Get stored projectId from localStorage, or connect to repository first
-      let storedProjectId = localStorage.getItem("projectId");
+      // Get or connect to repository
       let projectId: number;
+      const storedProjectId = localStorage.getItem("projectId");
       
       if (!storedProjectId) {
-        console.log('No stored project ID found, attempting to connect to repository');
+        console.log('No stored project ID, connecting to repository');
         const newProjectId = await connectToRepository();
         if (!newProjectId) {
-          setError('Failed to connect to repository. Please check settings and try again.');
-          setLoading(false);
-          setIsLeaderChanging(false);
-          setIsRefreshing(false);
-          return;
+          throw new Error('Failed to connect to repository');
         }
         projectId = newProjectId;
       } else {
         projectId = parseInt(storedProjectId);
       }
       
-      // Always fetch ALL environments data to keep both SIT1 and SIT2 data cached
-      const promises = allEnvironments.map(env =>
+      // Fetch data for all environments
+      const requests = allEnvironments.map(env => 
         fetch('/api/getTimeline', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -814,92 +750,56 @@ const EnvironmentTimeline: React.FC = () => {
             environment: env.name,
             jobType: env.jobType,
             jiraRegex,
-            forceRefresh: forceBypass // Pass the force refresh flag to the API
-          }),
-        }).then(res => {
-          if (!res.ok) {
-            throw new Error(`Error fetching timeline for ${env.display}: ${res.status}`);
-          }
-          return res.json();
-        }).then(result => {
-          // Handle the refreshInProgress flag from the API
-          if (result.refreshInProgress) {
-            console.log(`Refresh in progress for ${env.display}, using cached data`);
-            setIsRefreshing(true);
-          }
-          
-          // Handle refresh completed flag
-          if (result.refreshCompleted) {
-            console.log(`Refresh completed for ${env.display}`);
-            setIsRefreshing(false);
-          }
-          
-          return {
-            envId: env.id,
-            data: result.timeline || {} // Ensure we return an empty object if timeline is null/undefined
-          };
-        }).catch(error => {
-          // Handle individual environment fetch errors gracefully
-          console.error(`Error fetching timeline for ${env.id}:`, error);
-          return {
-            envId: env.id, 
-            data: {} // Return empty data for this environment
-          };
+            forceRefresh: forceBypass
+          })
+        })
+        .then(res => res.ok ? res.json() : { timeline: {} })
+        .then(data => ({ 
+          envId: env.id, 
+          data: data.timeline || {}
+        }))
+        .catch(error => {
+          console.error(`Error fetching ${env.id}:`, error);
+          return { envId: env.id, data: {} };
         })
       );
-
-      // Use Promise.allSettled to ensure we continue even if some environment fetches fail
-      const results = await Promise.all(promises);
       
-      // Check if we have valid data
-      const hasValidData = results.some(result => 
-        result && result.data && Object.keys(result.data).length > 0
-      );
+      // Wait for all fetches to complete
+      const results = await Promise.all(requests);
       
-      if (!hasValidData) {
-        console.warn("No valid timeline data received from any environment");
-      }
-      
-      const newTimelineData = results.reduce<TimelineData>((acc, result) => {
-        if (result && result.envId) {
-          acc[result.envId] = result.data || {};
-        }
+      // Build timeline data structure
+      const newTimelineData = results.reduce((acc, result) => {
+        acc[result.envId] = result.data;
         return acc;
-      }, {});
-
-      // Cache data in sessionStorage to avoid unnecessary fetches on navigation
+      }, {} as TimelineData);
+      
+      // Cache the results
       try {
-        // Store the data and timestamp
-        const cacheEntry = {
+        sessionStorage.setItem("timeline_data_cache", JSON.stringify({
           data: newTimelineData,
           timestamp: Date.now(),
           leader: selectedLeader,
           alignByCommit
-        };
-        sessionStorage.setItem("timeline_data_cache", JSON.stringify(cacheEntry));
+        }));
       } catch (e) {
-        console.warn("Failed to cache timeline data in sessionStorage:", e);
+        console.warn("Cache storage failed:", e);
       }
-
-      // Set timeline data and process it
-      console.log(`Setting timeline data with ${Object.keys(newTimelineData).length} environments`);
+      
+      // Update the UI
+      console.log(`Successfully fetched data for ${Object.keys(newTimelineData).length} environments`);
       setTimelineData(newTimelineData);
       processTimelineData(newTimelineData);
-      
-      // Mark that we've completed the first load
       setIsFirstLoad(false);
-      
-      // Reset state flags
       setIsLeaderChanging(false);
-      console.log(`Fetched timeline data for ALL environments: ${allEnvironments.map(e => e.id).join(', ')}`);
-    } catch (err) {
-      setError('Failed to fetch timeline data: ' + (err instanceof Error ? err.message : String(err)));
-      console.error("Fetch timeline error:", err);
-      // Reset states on error
       setIsRefreshing(false);
+      
+    } catch (error) {
+      console.error("Timeline fetch error:", error);
+      setError(`Failed to load timeline data: ${error instanceof Error ? error.message : String(error)}`);
       setIsLeaderChanging(false);
+      setIsRefreshing(false);
     } finally {
-      // Always ensure loading is set to false when done
+      // Always finish by clearing loading state
       setLoading(false);
     }
   };
@@ -907,104 +807,63 @@ const EnvironmentTimeline: React.FC = () => {
   // Track if we've already fetched data in this session
   const hasInitialFetchRef = useRef(false);
   
-  // Load cached data on component initialization
-  // On mount, check for cached data
+  // Simplified component initialization and data loading
   useEffect(() => {
-    console.log("Timeline component mounted, checking for cached data");
+    console.log("Timeline component mounted or leader changed");
     
-    // Set loading state initially
+    // Always start in loading state
     setLoading(true);
     
-    // Check if we have cached data in sessionStorage
+    // Clear any previous errors
+    setError(null);
+    
+    // Try to load from cache first
+    let loadedFromCache = false;
+    
     try {
       const cachedDataStr = sessionStorage.getItem("timeline_data_cache");
       if (cachedDataStr) {
         const cachedData = JSON.parse(cachedDataStr);
         
-        // Check if cache is for current settings
+        // Check if cache is for current settings and still fresh (within 15 min)
         if (cachedData.leader === selectedLeader && 
-            cachedData.alignByCommit === alignByCommit) {
+            cachedData.alignByCommit === alignByCommit &&
+            (Date.now() - cachedData.timestamp < 15 * 60 * 1000)) {
+            
+          console.log(`Using cached timeline data for ${selectedLeader}`);
           
-          // Check if cache is still fresh (within 15 minutes)
-          const cacheAge = Date.now() - cachedData.timestamp;
-          if (cacheAge < 15 * 60 * 1000) {
-            console.log(`Using cached timeline data (${Math.round(cacheAge / 1000)}s old)`);
-            
-            // Immediately apply the cached data to prevent blank screen
-            setTimelineData(cachedData.data);
-            processTimelineData(cachedData.data);
-            hasInitialFetchRef.current = true;
-            
-            // Since we loaded from cache, this is not a first load
-            setIsFirstLoad(false);
-            
-            // Set loading to false since we've restored from cache
-            setLoading(false);
-            return;
-          } else {
-            console.log("Cached data is stale, will fetch fresh data");
-          }
-        } else {
-          console.log("Cached data is for different settings, will fetch fresh data");
+          // Apply cached data
+          setTimelineData(cachedData.data);
+          processTimelineData(cachedData.data);
+          setIsFirstLoad(false);
+          setLoading(false);
+          loadedFromCache = true;
         }
-      } else {
-        console.log("No cached data found, will fetch fresh data");
       }
     } catch (e) {
-      console.warn("Failed to load cached timeline data:", e);
+      console.warn("Error loading from cache:", e);
     }
     
-    // If we get here, we didn't restore from cache
-    // Let the useEffect for selectedLeader/alignByCommit handle the fetch
-    
-    // On unmount, reset state
-    return () => {
-      console.log("Timeline component unmounting");
-      // Reset the refreshing state when component unmounts
-      setIsRefreshing(false);
-    };
-  }, []);
-  
-  // Fetch data only when selectedLeader changes or on initial render
-  useEffect(() => {
-    console.log(`Leader selection effect triggered: ${selectedLeader}`);
-    
-    // Check if this is a page reload vs a parameter change
-    const isInitialRender = !hasInitialFetchRef.current;
-    
-    if (isInitialRender) {
-      console.log('Initial timeline data fetch');
-      hasInitialFetchRef.current = true;
-
-      // Try to use cached data first, but if it wasn't available, fetch new data
-      if (!timelineData || Object.keys(timelineData).length === 0) {
-        console.log('No cached data was loaded, fetching fresh data');
-        fetchTimelineData(false);
-      } else {
-        console.log('Already loaded from cache, skipping initial fetch');
-      }
-    } else {
-      // This is a leader change, always fetch new data
-      console.log(`Leader changed to ${selectedLeader}, fetching new data`);
+    // If we didn't load from cache, fetch fresh data
+    if (!loadedFromCache) {
+      console.log(`Fetching fresh timeline data for ${selectedLeader}`);
       fetchTimelineData(false);
     }
     
-    // Set up periodic refresh
+    // Set up periodic refresh (every 15 minutes)
     const interval = setInterval(() => {
-      // Avoid refreshing if another operation is in progress
       if (!loading && !isRefreshing && !isLeaderChanging) {
-        console.log('Running scheduled timeline refresh');
+        console.log('Running scheduled refresh');
         fetchTimelineData(false);
-      } else {
-        console.log('Skipping scheduled refresh - another operation in progress');
       }
-    }, 15 * 60 * 1000); // Refresh every 15 minutes
+    }, 15 * 60 * 1000);
     
+    // Cleanup on unmount or leader change
     return () => {
-      console.log('Clearing refresh interval');
+      console.log('Cleaning up timeline effect');
       clearInterval(interval);
     };
-  }, [selectedLeader]); // Only depend on leader changes, not view mode
+  }, [selectedLeader]); // Only refresh when the leader changes
 
   const TimelineCard: React.FC<{ deployment: DeploymentData; envDisplay: string }> = ({ deployment, envDisplay }) => {
     const hasMoreTickets = deployment.tickets.length > MAX_VISIBLE_ITEMS;
