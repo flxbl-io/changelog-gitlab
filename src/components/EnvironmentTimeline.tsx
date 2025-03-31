@@ -404,16 +404,28 @@ const EnvironmentTimeline: React.FC = () => {
   // Function to force refresh data by clearing cache state
   const forceRefresh = () => {
     console.log("Forcing timeline data refresh");
-    // Clear the session storage cache
+    
+    // Clear only client-side caches
     sessionStorage.removeItem("timeline_data_cache");
     sessionStorage.removeItem("timeline_last_fetch_time");
-    // Clear state
+    
+    // Ask user if they want to bypass server cache too
+    const bypassServerCache = window.confirm(
+      "Do you want to bypass server cache and fetch fresh data from GitLab?\n\n" +
+      "• No: Use server cache if available (faster)\n" +
+      "• Yes: Force fresh data from GitLab (slower)"
+    );
+    
+    // Clear UI state
     setTimelineData({});
     setProcessedData({});
+    
     // Trigger fetch with loading state
     setLoading(true);
     setIsRefreshing(true);
-    fetchTimelineData(true);
+    
+    // Pass user's choice about server cache
+    fetchTimelineData(bypassServerCache);
   };
 
   const fetchTimelineData = async (forceBypass = false) => {
@@ -532,6 +544,11 @@ const EnvironmentTimeline: React.FC = () => {
   // Load cached data on component initialization
   // On mount, check for cached data
   useEffect(() => {
+    console.log("Timeline component mounted, checking for cached data");
+    
+    // Set loading state initially
+    setLoading(true);
+    
     // Check if we have cached data in sessionStorage
     try {
       const cachedDataStr = sessionStorage.getItem("timeline_data_cache");
@@ -546,19 +563,34 @@ const EnvironmentTimeline: React.FC = () => {
           const cacheAge = Date.now() - cachedData.timestamp;
           if (cacheAge < 15 * 60 * 1000) {
             console.log(`Using cached timeline data (${Math.round(cacheAge / 1000)}s old)`);
+            
+            // Immediately apply the cached data to prevent blank screen
             setTimelineData(cachedData.data);
             processTimelineData(cachedData.data);
             hasInitialFetchRef.current = true;
+            
+            // Set loading to false since we've restored from cache
+            setLoading(false);
             return;
+          } else {
+            console.log("Cached data is stale, will fetch fresh data");
           }
+        } else {
+          console.log("Cached data is for different settings, will fetch fresh data");
         }
+      } else {
+        console.log("No cached data found, will fetch fresh data");
       }
     } catch (e) {
       console.warn("Failed to load cached timeline data:", e);
     }
     
+    // If we get here, we didn't restore from cache
+    // Let the useEffect for selectedLeader/alignByCommit handle the fetch
+    
     // On unmount, reset state
     return () => {
+      console.log("Timeline component unmounting");
       // Reset the refreshing state when component unmounts
       setIsRefreshing(false);
     };
@@ -572,8 +604,16 @@ const EnvironmentTimeline: React.FC = () => {
     if (isInitialRender) {
       console.log('Initial timeline data fetch');
       hasInitialFetchRef.current = true;
-      fetchTimelineData(false);
+
+      // Try to use cached data first, but if it wasn't available, fetch new data
+      if (!timelineData || Object.keys(timelineData).length === 0) {
+        console.log('No cached data was loaded, fetching fresh data');
+        fetchTimelineData(false);
+      } else {
+        console.log('Already loaded from cache, skipping initial fetch');
+      }
     } else {
+      // This is a parameter change, always fetch
       console.log('Timeline parameters changed, refetching data');
       fetchTimelineData(false);
     }
@@ -584,7 +624,10 @@ const EnvironmentTimeline: React.FC = () => {
       fetchTimelineData(false);
     }, 15 * 60 * 1000); // Refresh every 15 minutes
     
-    return () => clearInterval(interval);
+    return () => {
+      console.log('Clearing refresh interval');
+      clearInterval(interval);
+    };
   }, [selectedLeader, alignByCommit]);
 
   const TimelineCard: React.FC<{ deployment: DeploymentData; envDisplay: string }> = ({ deployment, envDisplay }) => {
@@ -680,14 +723,50 @@ const EnvironmentTimeline: React.FC = () => {
   };
 
   if (loading) return (
-    <div className="flex justify-center items-center h-64">
-      <Clock className="animate-spin h-8 w-8 text-blue-500" />
+    <div className="flex flex-col justify-center items-center h-64">
+      <Clock className="animate-spin h-8 w-8 text-blue-500 mb-4" />
+      <p className="text-blue-600">Loading timeline data...</p>
+      <p className="text-xs text-gray-500 mt-2">
+        {isRefreshing ? 
+          "Refreshing data from the server..." : 
+          "Loading from cache when available for better performance."}
+      </p>
     </div>
   );
 
   if (error) return (
-    <div className="text-red-500 flex items-center justify-center h-64">
-      <ExternalLink className="mr-2" />{error}
+    <div className="text-red-500 flex flex-col items-center justify-center h-64">
+      <div className="flex items-center mb-4">
+        <ExternalLink className="mr-2" />{error}
+      </div>
+      <button 
+        onClick={() => {
+          setError(null);
+          setLoading(true);
+          // Don't force bypass server cache on retry
+          fetchTimelineData(false);
+        }}
+        className="mt-4 px-4 py-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-md"
+      >
+        Retry
+      </button>
+    </div>
+  );
+  
+  // Handle case where we have no data but also no loading/error state
+  if (!timelineData || Object.keys(timelineData).length === 0) return (
+    <div className="flex flex-col justify-center items-center h-64">
+      <p className="text-amber-600 mb-4">No timeline data available.</p>
+      <button 
+        onClick={() => {
+          setLoading(true);
+          // Don't force bypass server cache on load
+          fetchTimelineData(false);
+        }}
+        className="px-4 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-md"
+      >
+        Load Data
+      </button>
     </div>
   );
 

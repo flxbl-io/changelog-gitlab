@@ -208,6 +208,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       cleanupCache();
     }
     
+    // Log cache status for debugging
+    console.log(`Cache status: ${Object.keys(cache).length} entries in memory`);
+    
     const { 
       gitlabHost, 
       projectId, 
