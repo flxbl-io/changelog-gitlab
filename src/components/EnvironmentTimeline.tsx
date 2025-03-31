@@ -60,6 +60,15 @@ const EnvironmentTimeline: React.FC = () => {
   const [selectedLeader, setSelectedLeader] = useState<string>("sit1");
   const [alignByCommit, setAlignByCommit] = useState<boolean>(false);
   
+  // Leader config editing states
+  const [isEditing, setIsEditing] = useState(false);
+  const [editingLeader, setEditingLeader] = useState<string>('');
+  const [selectedEnvironments, setSelectedEnvironments] = useState<string[]>([]);
+  
+  // New leader creation states
+  const [isCreating, setIsCreating] = useState(false);
+  const [newLeaderName, setNewLeaderName] = useState('');
+  
   // Load settings from localStorage
   useEffect(() => {
     const storedJiraHost = localStorage.getItem("jiraHost");
@@ -493,11 +502,6 @@ const EnvironmentTimeline: React.FC = () => {
   );
 
   const dates = generateDateRange();
-
-  // State for leader config editing
-  const [isEditing, setIsEditing] = useState(false);
-  const [editingLeader, setEditingLeader] = useState<string>('');
-  const [selectedEnvironments, setSelectedEnvironments] = useState<string[]>([]);
   
   // Function to open the editor
   const handleEditLeaderConfig = (leader: string) => {
@@ -560,10 +564,6 @@ const EnvironmentTimeline: React.FC = () => {
       setSelectedEnvironments([...selectedEnvironments, envId]);
     }
   };
-  
-  // State for new leader creation
-  const [isCreating, setIsCreating] = useState(false);
-  const [newLeaderName, setNewLeaderName] = useState('');
   
   // Function to create a new leader configuration
   const handleCreateLeader = () => {
