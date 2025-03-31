@@ -211,61 +211,92 @@ const EnvironmentTimeline: React.FC = () => {
   };
 
   const parseDate = (tag: string): Date => {
-    const tagParts = tag.split('_');
-    if (tagParts.length < 3) {
-      throw new Error(`Invalid tag format: ${tag}`);
-    }
-    
-    const datePart = tagParts[2];
-    if (!datePart) {
-      throw new Error(`Missing date part in tag: ${tag}`);
-    }
-    
-    // Check if the date part has the expected format ENV_TYPE_DDMMYYYY-HHMMSS
-    const dateTimeParts = datePart.split('-');
-    if (dateTimeParts.length !== 2) {
-      throw new Error(`Invalid date-time format in tag: ${tag}, expected format ENV_TYPE_DDMMYYYY-HHMMSS`);
-    }
-    
-    const [datePortion, timePortion] = dateTimeParts;
-    
-    // Only handle DDMMYYYY format as that's the standard format for our tags
-    let day = 0, month = 0, year = 0;
-    let hour = 0, minute = 0, second = 0;
-    
     try {
+      const tagParts = tag.split('_');
+      if (tagParts.length < 3) {
+        throw new Error(`Invalid tag format: ${tag}`);
+      }
+      
+      const datePart = tagParts[2];
+      if (!datePart) {
+        throw new Error(`Missing date part in tag: ${tag}`);
+      }
+      
+      // Example format: SIT1_DEP_20032025-125808 (DDMMYYYY-HHMMSS)
+      const dateTimeParts = datePart.split('-');
+      if (dateTimeParts.length !== 2) {
+        throw new Error(`Invalid date-time format in tag: ${tag}, expected format ENV_TYPE_DDMMYYYY-HHMMSS`);
+      }
+      
+      const [datePortion, timePortion] = dateTimeParts;
+      
       if (datePortion.length !== 8) {
-        throw new Error(`Invalid date format in tag: ${tag}, expected DDMMYYYY format`);
+        throw new Error(`Invalid date length in tag: ${tag}, expected 8 digits in DDMMYYYY format`);
+      }
+      
+      if (timePortion.length !== 6) {
+        throw new Error(`Invalid time length in tag: ${tag}, expected 6 digits in HHMMSS format`);
       }
       
       // Parse DDMMYYYY format
-      day = parseInt(datePortion.substring(0, 2));
-      month = parseInt(datePortion.substring(2, 4)) - 1;  // JS months are 0-indexed
-      year = parseInt(datePortion.substring(4, 8));
+      const day = parseInt(datePortion.substring(0, 2));
+      const month = parseInt(datePortion.substring(2, 4)) - 1;  // JS months are 0-indexed
+      const year = parseInt(datePortion.substring(4, 8));
       
-      // Parse time portion HHMMSS
-      if (timePortion && timePortion.length === 6) {
-        hour = parseInt(timePortion.substring(0, 2));
-        minute = parseInt(timePortion.substring(2, 4));
-        second = parseInt(timePortion.substring(4, 6));
-      } else {
-        throw new Error(`Invalid time format in tag: ${tag}, expected HHMMSS format`);
+      // Parse HHMMSS format
+      const hour = parseInt(timePortion.substring(0, 2));
+      const minute = parseInt(timePortion.substring(2, 4));
+      const second = parseInt(timePortion.substring(4, 6));
+      
+      // Validate date components
+      if (isNaN(day) || isNaN(month) || isNaN(year) || isNaN(hour) || isNaN(minute) || isNaN(second)) {
+        throw new Error(`Invalid date/time components in tag: ${tag}`);
       }
       
-      // Basic validation to avoid invalid dates
-      if (month < 0 || month > 11 || day < 1 || day > 31) {
-        throw new Error(`Invalid date values in tag: ${tag} (day=${day}, month=${month+1}, year=${year})`);
+      if (month < 0 || month > 11) {
+        throw new Error(`Invalid month in tag: ${tag}, month=${month+1}`);
       }
       
-      // Create date object using the parsed components
+      if (day < 1 || day > 31) {
+        throw new Error(`Invalid day in tag: ${tag}, day=${day}`);
+      }
+      
+      if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+        throw new Error(`Invalid time in tag: ${tag}, time=${hour}:${minute}:${second}`);
+      }
+      
+      // Create date object
       const parsedDate = new Date(year, month, day, hour, minute, second);
-      console.log(`Parsed tag ${tag} as ${parsedDate.toLocaleString('en-AU')}`);
+      
+      // Extra validation - check if the date is valid (handles edge cases like February 30th)
+      if (parsedDate.getFullYear() !== year || 
+          parsedDate.getMonth() !== month || 
+          parsedDate.getDate() !== day) {
+        throw new Error(`Resulting date is invalid for tag: ${tag}, parsed as ${parsedDate.toLocaleString('en-AU')}`);
+      }
       
       return parsedDate;
     } catch (error) {
+      // Log the error but allow the app to continue
       console.error(`Error parsing date from tag ${tag}:`, error);
-      // Return today as a fallback to avoid crashing, but log the error
-      return new Date();
+      
+      // Try one more basic format attempt without detailed validation
+      try {
+        const parts = tag.split('_')[2].split('-');
+        const datePart = parts[0];
+        const timePart = parts[1] || "000000";
+        
+        // Extract components with basic sanity checks
+        const day = Math.min(31, Math.max(1, parseInt(datePart.substring(0, 2)) || 1));
+        const month = Math.min(11, Math.max(0, (parseInt(datePart.substring(2, 4)) || 1) - 1));
+        const year = parseInt(datePart.substring(4, 8)) || new Date().getFullYear();
+        
+        return new Date(year, month, day);
+      } catch (e) {
+        console.error(`Even basic date parsing failed for tag ${tag}:`, e);
+        // Return current date as fallback to avoid crashing
+        return new Date();
+      }
     }
   };
 
@@ -736,6 +767,7 @@ const EnvironmentTimeline: React.FC = () => {
         console.log(`Skipping fetch, last fetch was too recent (${Math.round((now - parseInt(lastFetchTime)) / 1000)}s ago)`);
         // Still maintain UI state for consistency
         setIsLeaderChanging(false);
+        setLoading(false);  // Ensure loading state is reset
         return;
       }
     }
@@ -762,6 +794,8 @@ const EnvironmentTimeline: React.FC = () => {
         if (!newProjectId) {
           setError('Failed to connect to repository. Please check settings and try again.');
           setLoading(false);
+          setIsLeaderChanging(false);
+          setIsRefreshing(false);
           return;
         }
         projectId = newProjectId;
@@ -802,14 +836,34 @@ const EnvironmentTimeline: React.FC = () => {
           
           return {
             envId: env.id,
-            data: result.timeline
+            data: result.timeline || {} // Ensure we return an empty object if timeline is null/undefined
+          };
+        }).catch(error => {
+          // Handle individual environment fetch errors gracefully
+          console.error(`Error fetching timeline for ${env.id}:`, error);
+          return {
+            envId: env.id, 
+            data: {} // Return empty data for this environment
           };
         })
       );
 
+      // Use Promise.allSettled to ensure we continue even if some environment fetches fail
       const results = await Promise.all(promises);
+      
+      // Check if we have valid data
+      const hasValidData = results.some(result => 
+        result && result.data && Object.keys(result.data).length > 0
+      );
+      
+      if (!hasValidData) {
+        console.warn("No valid timeline data received from any environment");
+      }
+      
       const newTimelineData = results.reduce<TimelineData>((acc, result) => {
-        acc[result.envId] = result.data;
+        if (result && result.envId) {
+          acc[result.envId] = result.data || {};
+        }
         return acc;
       }, {});
 
@@ -827,20 +881,25 @@ const EnvironmentTimeline: React.FC = () => {
         console.warn("Failed to cache timeline data in sessionStorage:", e);
       }
 
+      // Set timeline data and process it
+      console.log(`Setting timeline data with ${Object.keys(newTimelineData).length} environments`);
       setTimelineData(newTimelineData);
       processTimelineData(newTimelineData);
+      
       // Mark that we've completed the first load
       setIsFirstLoad(false);
-      // Reset leader changing state
+      
+      // Reset state flags
       setIsLeaderChanging(false);
       console.log(`Fetched timeline data for ALL environments: ${allEnvironments.map(e => e.id).join(', ')}`);
     } catch (err) {
       setError('Failed to fetch timeline data: ' + (err instanceof Error ? err.message : String(err)));
-      console.error(err);
+      console.error("Fetch timeline error:", err);
       // Reset states on error
       setIsRefreshing(false);
       setIsLeaderChanging(false);
     } finally {
+      // Always ensure loading is set to false when done
       setLoading(false);
     }
   };
