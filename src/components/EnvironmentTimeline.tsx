@@ -8,6 +8,7 @@ interface TimelineItem {
   tag: string;
   tickets: string[];
   mrIds: string[];
+  commitId?: string;
 }
 
 interface Environment {
@@ -20,7 +21,7 @@ interface Environment {
 interface DeploymentData extends TimelineItem {
   date: Date;
   tag: string;
-  commitId?:string;
+  // Don't need to redeclare commitId since it's inherited from TimelineItem
 }
 
 interface ProcessedData {
@@ -56,6 +57,8 @@ const EnvironmentTimeline: React.FC = () => {
   const [repository, setRepository] = useState("ocio/salesforce/pace-sf");
   const [gitlabHost, setGitlabHost] = useState("gitlab.apps.ndia.gov.au");
   const [jiraRegex, setJiraRegex] = useState("(PSS-d+)|(P2B-d+)|(SFUAT-d+)|(DIPMO-d+)|(P2CL-d+)|(GPO-d+)|(CS-d+)|(OCM-d+)|(OCM-d+)|(TS-d+)|");
+  const [selectedLeader, setSelectedLeader] = useState<string>("sit1");
+  const [alignByCommit, setAlignByCommit] = useState<boolean>(false);
   
   // Load settings from localStorage
   useEffect(() => {
@@ -63,14 +66,19 @@ const EnvironmentTimeline: React.FC = () => {
     const storedRepository = localStorage.getItem("repository");
     const storedGitlabHost = localStorage.getItem("gitlabHost");
     const storedJiraRegex = localStorage.getItem("jiraRegex");
+    const storedLeader = localStorage.getItem("selectedLeader");
+    const storedAlignByCommit = localStorage.getItem("alignByCommit");
     
     if (storedJiraHost) setJiraHost(storedJiraHost);
     if (storedRepository) setRepository(storedRepository);
     if (storedGitlabHost) setGitlabHost(storedGitlabHost);
     if (storedJiraRegex) setJiraRegex(storedJiraRegex);
+    if (storedLeader) setSelectedLeader(storedLeader);
+    if (storedAlignByCommit) setAlignByCommit(storedAlignByCommit === 'true');
   }, []);
 
-  const environments: Environment[] = [
+  // Define all environments
+  const allEnvironments: Environment[] = [
     { id: 'sit1-val', display: 'SIT1 - VAL', name: 'SIT1', jobType: 'VAL' },
     { id: 'sit1-dep', display: 'SIT1 - DEP', name: 'SIT1', jobType: 'DEP' },
     { id: 'sit2-val', display: 'SIT2 - VAL', name: 'SIT2', jobType: 'VAL' },
@@ -78,6 +86,30 @@ const EnvironmentTimeline: React.FC = () => {
     { id: 'staging-dep', display: 'STAGING - DEP', name: 'STAGING', jobType: 'DEP' },
     { id: 'prod-val', display: 'PROD - VAL', name: 'PROD', jobType: 'VAL' },
   ];
+  
+  // Define leader configurations
+  const leaderConfigs = {
+    'sit1': ['sit1-val', 'sit1-dep', 'staging-dep', 'prod-val'],
+    'sit2': ['sit2-val', 'sit2-dep', 'staging-dep', 'prod-val']
+  };
+  
+  // Filter environments based on selected leader
+  const environments = allEnvironments.filter(env => 
+    leaderConfigs[selectedLeader as keyof typeof leaderConfigs].includes(env.id)
+  );
+  
+  // Handle leader selection change
+  const handleLeaderChange = (leader: string) => {
+    setSelectedLeader(leader);
+    localStorage.setItem("selectedLeader", leader);
+  };
+  
+  // Handle alignment toggle
+  const handleAlignToggle = () => {
+    const newValue = !alignByCommit;
+    setAlignByCommit(newValue);
+    localStorage.setItem("alignByCommit", String(newValue));
+  };
 
   const parseDate = (tag: string): Date => {
     const datePart = tag.split('_')[2];
@@ -135,32 +167,102 @@ const EnvironmentTimeline: React.FC = () => {
   const processTimelineData = (data: TimelineData) => {
     const processed: ProcessedData = {};
     
-    // Initialize all dates with empty arrays
-    generateDateRange().forEach(dateKey => {
-      processed[dateKey] = {};
-      environments.forEach(env => {
-        processed[dateKey][env.id] = [];
-      });
-    });
-
-    // Fill in the deployments
-    Object.entries(data).forEach(([envId, envData]) => {
-      Object.entries(envData).forEach(([tag, deployment]) => {
-        const date = parseDate(tag);
-        const dateKey = getDateKey(date);
-        
-        if (processed[dateKey]) {  // Only process if date is within our range
-          if (!processed[dateKey][envId]) {
-            processed[dateKey][envId] = [];
+    if (alignByCommit) {
+      // Process data aligned by commit ID
+      
+      // First, create a map of commit IDs to deployments across environments
+      const commitMap: Record<string, {
+        dateKey: string;
+        deployments: Record<string, DeploymentData[]>;
+      }> = {};
+      
+      // Process all deployments and organize by commit ID
+      Object.entries(data).forEach(([envId, envData]) => {
+        Object.entries(envData).forEach(([tag, deployment]) => {
+          // Skip if no commit ID
+          const commitId = deployment.commitId;
+          if (!commitId) return;
+          
+          const date = parseDate(tag);
+          const dateKey = getDateKey(date);
+          
+          // Initialize this commit in the map if it doesn't exist
+          if (!commitMap[commitId]) {
+            commitMap[commitId] = {
+              dateKey,
+              deployments: {}
+            };
+            
+            // Initialize all environments with empty arrays
+            environments.forEach(env => {
+              commitMap[commitId].deployments[env.id] = [];
+            });
           }
-          processed[dateKey][envId].push({
+          
+          // Add this deployment to the commit map
+          if (!commitMap[commitId].deployments[envId]) {
+            commitMap[commitId].deployments[envId] = [];
+          }
+          
+          commitMap[commitId].deployments[envId].push({
             ...deployment,
             tag,
-            date, // Keep original timestamp
+            date
+          });
+        });
+      });
+      
+      // Initialize all dates in the processed data
+      generateDateRange().forEach(dateKey => {
+        processed[dateKey] = {};
+        environments.forEach(env => {
+          processed[dateKey][env.id] = [];
+        });
+      });
+      
+      // Fill in the processed data from the commit map
+      Object.entries(commitMap).forEach(([commitId, { dateKey, deployments }]) => {
+        if (processed[dateKey]) {  // Only process if date is within our range
+          // Add each environment's deployments for this commit
+          Object.entries(deployments).forEach(([envId, envDeployments]) => {
+            if (!processed[dateKey][envId]) {
+              processed[dateKey][envId] = [];
+            }
+            
+            processed[dateKey][envId].push(...envDeployments);
           });
         }
       });
-    });
+    } else {
+      // Traditional date-based processing
+      
+      // Initialize all dates with empty arrays
+      generateDateRange().forEach(dateKey => {
+        processed[dateKey] = {};
+        environments.forEach(env => {
+          processed[dateKey][env.id] = [];
+        });
+      });
+  
+      // Fill in the deployments
+      Object.entries(data).forEach(([envId, envData]) => {
+        Object.entries(envData).forEach(([tag, deployment]) => {
+          const date = parseDate(tag);
+          const dateKey = getDateKey(date);
+          
+          if (processed[dateKey]) {  // Only process if date is within our range
+            if (!processed[dateKey][envId]) {
+              processed[dateKey][envId] = [];
+            }
+            processed[dateKey][envId].push({
+              ...deployment,
+              tag,
+              date, // Keep original timestamp
+            });
+          }
+        });
+      });
+    }
 
     // Sort deployments within each date and environment by time
     Object.keys(processed).forEach(dateKey => {
@@ -372,8 +474,44 @@ const EnvironmentTimeline: React.FC = () => {
 
   return (
     <div className="container mx-auto p-4">
+      {/* Controls */}
+      <div className="mb-6 flex flex-wrap items-center gap-4">
+        <div className="flex items-center">
+          <span className="mr-2 font-medium">Leader:</span>
+          <select 
+            className="px-3 py-2 border rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            value={selectedLeader}
+            onChange={(e) => handleLeaderChange(e.target.value)}
+          >
+            <option value="sit1">SIT1</option>
+            <option value="sit2">SIT2</option>
+          </select>
+        </div>
+        
+        <div className="flex items-center">
+          <label className="flex items-center cursor-pointer">
+            <div className="relative">
+              <input 
+                type="checkbox" 
+                className="sr-only" 
+                checked={alignByCommit}
+                onChange={handleAlignToggle}
+              />
+              <div className={`block w-14 h-8 rounded-full ${alignByCommit ? 'bg-blue-600' : 'bg-gray-300'}`}></div>
+              <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition ${alignByCommit ? 'transform translate-x-6' : ''}`}></div>
+            </div>
+            <div className="ml-3 text-gray-700 font-medium">
+              Align by Commit ID
+            </div>
+          </label>
+        </div>
+      </div>
+      
       {/* Environment Headers */}
-      <div className="grid grid-cols-[1fr,2fr,2fr,2fr,2fr,2fr,2fr] gap-4 mb-6">
+      <div className={`grid gap-4 mb-6`} 
+          style={{ 
+            gridTemplateColumns: `1fr ${environments.map(() => '2fr').join(' ')}` 
+          }}>
         <div className="text-base font-medium text-gray-500">Date</div>
         {environments.map((env, envIndex) => (
           <div key={env.id} className={`${
@@ -393,8 +531,22 @@ const EnvironmentTimeline: React.FC = () => {
           date.setMonth(parseInt(month) - 1);
           date.setDate(parseInt(day));
           
+          // Check if this date has any deployments for any environment
+          const hasDeployments = environments.some(env => 
+            (processedData[dateKey]?.[env.id]?.length || 0) > 0
+          );
+          
+          // Skip dates with no deployments when aligning by commit
+          if (alignByCommit && !hasDeployments) {
+            return null;
+          }
+          
           return (
-            <div key={dateKey} className="grid grid-cols-[1fr,2fr,2fr,2fr,2fr,2fr,2fr] gap-4">
+            <div key={dateKey} 
+                className="grid gap-4"
+                style={{ 
+                  gridTemplateColumns: `1fr ${environments.map(() => '2fr').join(' ')}` 
+                }}>
               {/* Date cell */}
               <div className={`text-base text-gray-500 flex items-center p-4 ${
                 rowIndex % 2 === 0 ? 'bg-gray-50' : 'bg-white'
@@ -424,7 +576,7 @@ const EnvironmentTimeline: React.FC = () => {
               ))}
             </div>
           );
-        })}
+        }).filter(Boolean)}
       </div>
 
       <DeploymentModal
