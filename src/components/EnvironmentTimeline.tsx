@@ -187,17 +187,19 @@ const EnvironmentTimeline: React.FC = () => {
     });
   };
 
+  // New interface for commit-aligned data structure
+  interface CommitAlignedData {
+    commitId: string;
+    dateKey: string;
+    firstDate: Date;  // The date of the first deployment with this commit
+    environments: Record<string, DeploymentData[]>;
+  }
+
   const processTimelineData = (data: TimelineData) => {
-    const processed: ProcessedData = {};
-    
     if (alignByCommit) {
-      // Process data aligned by commit ID
-      
-      // First, create a map of commit IDs to deployments across environments
-      const commitMap: Record<string, {
-        dateKey: string;
-        deployments: Record<string, DeploymentData[]>;
-      }> = {};
+      // For commit alignment with date grouping
+      // First, collect all deployments by commit ID
+      const commitMap: Record<string, CommitAlignedData> = {};
       
       // Process all deployments and organize by commit ID
       Object.entries(data).forEach(([envId, envData]) => {
@@ -209,31 +211,45 @@ const EnvironmentTimeline: React.FC = () => {
           const date = parseDate(tag);
           const dateKey = getDateKey(date);
           
+          // Create deployment data object
+          const deploymentData: DeploymentData = {
+            ...deployment,
+            tag,
+            date
+          };
+          
           // Initialize this commit in the map if it doesn't exist
           if (!commitMap[commitId]) {
             commitMap[commitId] = {
+              commitId,
               dateKey,
-              deployments: {}
+              firstDate: date,
+              environments: {}
             };
             
             // Initialize all environments with empty arrays
             environments.forEach(env => {
-              commitMap[commitId].deployments[env.id] = [];
+              commitMap[commitId].environments[env.id] = [];
             });
           }
           
           // Add this deployment to the commit map
-          if (!commitMap[commitId].deployments[envId]) {
-            commitMap[commitId].deployments[envId] = [];
+          if (!commitMap[commitId].environments[envId]) {
+            commitMap[commitId].environments[envId] = [];
           }
           
-          commitMap[commitId].deployments[envId].push({
-            ...deployment,
-            tag,
-            date
-          });
+          commitMap[commitId].environments[envId].push(deploymentData);
+          
+          // Update the first date if this deployment is earlier
+          if (date < commitMap[commitId].firstDate) {
+            commitMap[commitId].firstDate = date;
+            commitMap[commitId].dateKey = dateKey;
+          }
         });
       });
+      
+      // Now, organize deployments by date keys
+      const processed: ProcessedData = {};
       
       // Initialize all dates in the processed data
       generateDateRange().forEach(dateKey => {
@@ -243,21 +259,58 @@ const EnvironmentTimeline: React.FC = () => {
         });
       });
       
-      // Fill in the processed data from the commit map
-      Object.entries(commitMap).forEach(([commitId, { dateKey, deployments }]) => {
-        if (processed[dateKey]) {  // Only process if date is within our range
-          // Add each environment's deployments for this commit
-          Object.entries(deployments).forEach(([envId, envDeployments]) => {
-            if (!processed[dateKey][envId]) {
-              processed[dateKey][envId] = [];
-            }
+      // Now add commit-grouped deployments to appropriate dates
+      Object.values(commitMap).forEach(commitData => {
+        const dateKey = commitData.dateKey;
+        
+        // Skip if this date is not in our display range
+        if (!processed[dateKey]) return;
+        
+        // Add a special commit data property to the date
+        if (!processed[dateKey]["__commits"]) {
+          processed[dateKey]["__commits"] = [];
+        }
+        processed[dateKey]["__commits"].push(commitData.commitId);
+        
+        // Add each environment's deployments for this commit
+        environments.forEach(env => {
+          const envDeployments = commitData.environments[env.id] || [];
+          
+          // Only add if there are deployments for this environment
+          if (envDeployments.length > 0) {
+            // Tag these deployments with their commit ID for proper grouping
+            const taggedDeployments = envDeployments.map(dep => ({
+              ...dep,
+              __commitId: commitData.commitId // Add this for grouping
+            }));
             
-            processed[dateKey][envId].push(...envDeployments);
+            processed[dateKey][env.id].push(...taggedDeployments);
+          }
+        });
+      });
+      
+      // Sort deployments within each date and environment by time
+      Object.keys(processed).forEach(dateKey => {
+        Object.keys(processed[dateKey]).forEach(envId => {
+          if (envId !== "__commits") {
+            processed[dateKey][envId].sort((a, b) => b.date.getTime() - a.date.getTime());
+          }
+        });
+        
+        // Also sort commits within each date
+        if (processed[dateKey]["__commits"]) {
+          processed[dateKey]["__commits"].sort((commitIdA, commitIdB) => {
+            const dateA = commitMap[commitIdA]?.firstDate || new Date(0);
+            const dateB = commitMap[commitIdB]?.firstDate || new Date(0);
+            return dateB.getTime() - dateA.getTime();
           });
         }
       });
+      
+      setProcessedData(processed);
     } else {
       // Traditional date-based processing
+      const processed: ProcessedData = {};
       
       // Initialize all dates with empty arrays
       generateDateRange().forEach(dateKey => {
@@ -285,16 +338,16 @@ const EnvironmentTimeline: React.FC = () => {
           }
         });
       });
-    }
-
-    // Sort deployments within each date and environment by time
-    Object.keys(processed).forEach(dateKey => {
-      Object.keys(processed[dateKey]).forEach(envId => {
-        processed[dateKey][envId].sort((a, b) => b.date.getTime() - a.date.getTime());
+      
+      // Sort deployments within each date and environment by time
+      Object.keys(processed).forEach(dateKey => {
+        Object.keys(processed[dateKey]).forEach(envId => {
+          processed[dateKey][envId].sort((a, b) => b.date.getTime() - a.date.getTime());
+        });
       });
-    });
-
-    setProcessedData(processed);
+      
+      setProcessedData(processed);
+    }
   };
 
   const connectToRepository = async () => {
@@ -733,7 +786,7 @@ const EnvironmentTimeline: React.FC = () => {
       </div>
 
       {/* Timeline Rows */}
-      <div className="space-y-0">
+      <div className="space-y-4">
         {dates.map((dateKey, rowIndex) => {
           const [day, month] = [dateKey.substring(0, 2), dateKey.substring(2, 4)];
           const date = new Date();
@@ -745,44 +798,123 @@ const EnvironmentTimeline: React.FC = () => {
             (processedData[dateKey]?.[env.id]?.length || 0) > 0
           );
           
-          // Skip dates with no deployments when aligning by commit
-          if (alignByCommit && !hasDeployments) {
+          // Skip empty dates
+          if (!hasDeployments) {
             return null;
           }
           
+          // Get all commits for this date (only used in alignByCommit mode)
+          const dateCommits = processedData[dateKey]?.["__commits"] || [];
+          
           return (
-            <div key={dateKey} 
-                className="grid gap-4"
-                style={{ 
-                  gridTemplateColumns: `1fr ${environments.map(() => '2fr').join(' ')}` 
-                }}>
-              {/* Date cell */}
-              <div className={`text-base text-gray-500 flex items-center p-4 ${
-                rowIndex % 2 === 0 ? 'bg-gray-50' : 'bg-white'
-              }`}>
+            <div key={dateKey} className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
+              {/* Date Header */}
+              <div className="bg-gray-100 p-4 font-semibold border-b border-gray-200">
                 {date.toLocaleDateString('en-AU', {
-                  day: '2-digit',
-                  month: 'short'
+                  weekday: 'long',
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric'
                 })}
               </div>
               
-              {/* Environment cells */}
-              {environments.map((env, envIndex) => (
-                <div key={`${dateKey}-${env.id}`} 
-                    className={`min-h-[4rem] p-4 ${
-                      rowIndex % 2 === 0 ? 'bg-gray-50' : 'bg-white'
-                    } ${
-                      envIndex % 2 === 0 ? 'bg-opacity-100' : 'bg-opacity-50'
-                    }`}>
-                  {processedData[dateKey]?.[env.id]?.map((deployment, index) => (
-                    <TimelineCard
-                      key={`${deployment.tag}-${index}`}
-                      deployment={deployment}
-                      envDisplay={env.display}
-                    />
+              {alignByCommit ? (
+                // Commit-aligned view - group deployments by commit within each date
+                dateCommits.map((commitId, commitIndex) => {
+                  // Find any deployment with this commit to show its details
+                  let commitDisplayData = null;
+                  for (const env of environments) {
+                    const deployments = processedData[dateKey]?.[env.id] || [];
+                    const matchingDep = deployments.find(d => d.__commitId === commitId);
+                    if (matchingDep) {
+                      commitDisplayData = matchingDep;
+                      break;
+                    }
+                  }
+                  
+                  if (!commitDisplayData) return null;
+                  
+                  return (
+                    <div key={`${dateKey}-${commitId}`} 
+                        className={`grid gap-4 border-b border-gray-200 py-2 ${
+                          commitIndex % 2 === 0 ? 'bg-gray-50' : 'bg-white'
+                        }`}
+                        style={{ 
+                          gridTemplateColumns: `1fr ${environments.map(() => '2fr').join(' ')}` 
+                        }}>
+                      {/* Commit ID cell */}
+                      <div className="flex items-center p-4">
+                        <span className="text-sm font-mono bg-gray-100 p-1 rounded text-gray-800">
+                          {commitId.substring(0, 8)}
+                        </span>
+                      </div>
+                      
+                      {/* Environment cells */}
+                      {environments.map((env) => {
+                        // Get only deployments for this commit ID
+                        const commitDeployments = processedData[dateKey]?.[env.id]
+                          ?.filter(d => d.__commitId === commitId) || [];
+                          
+                        return (
+                          <div key={`${dateKey}-${commitId}-${env.id}`} className="p-4">
+                            {commitDeployments.map((deployment, index) => (
+                              <TimelineCard
+                                key={`${deployment.tag}-${index}`}
+                                deployment={deployment}
+                                envDisplay={env.display}
+                              />
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })
+              ) : (
+                // Traditional date-based view - all deployments grouped by environment only
+                <div className="grid gap-4 py-2"
+                    style={{ 
+                      gridTemplateColumns: `1fr ${environments.map(() => '2fr').join(' ')}` 
+                    }}>
+                  {/* Header cell - labels */}
+                  <div className="p-4 font-medium text-gray-600">
+                    Environments
+                  </div>
+                  
+                  {/* Environment headers */}
+                  {environments.map((env, envIndex) => (
+                    <div key={`${dateKey}-header-${env.id}`} 
+                        className={`p-3 ${
+                          envIndex % 2 === 0 ? 'bg-blue-50' : 'bg-blue-100'
+                        }`}>
+                      <span className="font-medium">{env.display}</span>
+                    </div>
                   ))}
                 </div>
-              ))}
+              )}
+              
+              {/* Show deployments in standard (non-commit-aligned) mode */}
+              {!alignByCommit && (
+                <div className="grid gap-4"
+                    style={{ 
+                      gridTemplateColumns: `1fr ${environments.map(() => '2fr').join(' ')}` 
+                    }}>
+                  <div className="h-4"></div> {/* Spacer cell */}
+                  
+                  {/* Environment cells */}
+                  {environments.map((env) => (
+                    <div key={`${dateKey}-content-${env.id}`} className="p-4">
+                      {processedData[dateKey]?.[env.id]?.map((deployment, index) => (
+                        <TimelineCard
+                          key={`${deployment.tag}-${index}`}
+                          deployment={deployment}
+                          envDisplay={env.display}
+                        />
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           );
         }).filter(Boolean)}
