@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { GitCommit, GitMerge, Tag, Clock, Ticket, ExternalLink, MoreHorizontal, RefreshCw } from 'lucide-react';
 import DeploymentModal from './DeploymentModal';
 
@@ -21,12 +21,15 @@ interface Environment {
 interface DeploymentData extends TimelineItem {
   date: Date;
   tag: string;
+  // Custom field for commit-aligned view
+  __commitId?: string;
   // Don't need to redeclare commitId since it's inherited from TimelineItem
 }
 
+// Define a more generic type for the date entries in processed data
 interface ProcessedData {
   [dateKey: string]: {
-    [envId: string]: DeploymentData[];
+    [key: string]: DeploymentData[] | string[];
   };
 }
 
@@ -275,9 +278,10 @@ const EnvironmentTimeline: React.FC = () => {
         
         // Add a special commit data property to the date
         if (!processed[dateKey]["__commits"]) {
-          processed[dateKey]["__commits"] = [];
+          processed[dateKey]["__commits"] = [] as string[];
         }
-        processed[dateKey]["__commits"].push(commitData.commitId);
+        // Type cast to access the array methods
+        (processed[dateKey]["__commits"] as string[]).push(commitData.commitId);
         
         // Add each environment's deployments for this commit
         environments.forEach(env => {
@@ -291,7 +295,12 @@ const EnvironmentTimeline: React.FC = () => {
               __commitId: commitData.commitId // Add this for grouping
             }));
             
-            processed[dateKey][env.id].push(...taggedDeployments);
+            // Make sure we've initialized the array for this environment
+            if (!processed[dateKey][env.id]) {
+              processed[dateKey][env.id] = [] as DeploymentData[];
+            }
+            // Cast to correct type for TypeScript
+            (processed[dateKey][env.id] as DeploymentData[]).push(...taggedDeployments);
           }
         });
       });
@@ -300,13 +309,14 @@ const EnvironmentTimeline: React.FC = () => {
       Object.keys(processed).forEach(dateKey => {
         Object.keys(processed[dateKey]).forEach(envId => {
           if (envId !== "__commits") {
-            processed[dateKey][envId].sort((a, b) => b.date.getTime() - a.date.getTime());
+            // Cast to DeploymentData[] to access date property
+            (processed[dateKey][envId] as DeploymentData[]).sort((a, b) => b.date.getTime() - a.date.getTime());
           }
         });
         
         // Also sort commits within each date
         if (processed[dateKey]["__commits"]) {
-          processed[dateKey]["__commits"].sort((commitIdA, commitIdB) => {
+          (processed[dateKey]["__commits"] as string[]).sort((commitIdA, commitIdB) => {
             const dateA = commitMap[commitIdA]?.firstDate || new Date(0);
             const dateB = commitMap[commitIdB]?.firstDate || new Date(0);
             return dateB.getTime() - dateA.getTime();
@@ -323,7 +333,7 @@ const EnvironmentTimeline: React.FC = () => {
       generateDateRange().forEach(dateKey => {
         processed[dateKey] = {};
         environments.forEach(env => {
-          processed[dateKey][env.id] = [];
+          processed[dateKey][env.id] = [] as DeploymentData[];
         });
       });
   
@@ -335,9 +345,9 @@ const EnvironmentTimeline: React.FC = () => {
           
           if (processed[dateKey]) {  // Only process if date is within our range
             if (!processed[dateKey][envId]) {
-              processed[dateKey][envId] = [];
+              processed[dateKey][envId] = [] as DeploymentData[];
             }
-            processed[dateKey][envId].push({
+            (processed[dateKey][envId] as DeploymentData[]).push({
               ...deployment,
               tag,
               date, // Keep original timestamp
@@ -349,7 +359,8 @@ const EnvironmentTimeline: React.FC = () => {
       // Sort deployments within each date and environment by time
       Object.keys(processed).forEach(dateKey => {
         Object.keys(processed[dateKey]).forEach(envId => {
-          processed[dateKey][envId].sort((a, b) => b.date.getTime() - a.date.getTime());
+          // Cast to DeploymentData[] to access date property
+          (processed[dateKey][envId] as DeploymentData[]).sort((a, b) => b.date.getTime() - a.date.getTime());
         });
       });
       
@@ -947,7 +958,7 @@ const EnvironmentTimeline: React.FC = () => {
           }
           
           // Get all commits for this date (only used in alignByCommit mode)
-          const dateCommits = processedData[dateKey]?.["__commits"] || [];
+          const dateCommits = (processedData[dateKey]?.["__commits"] as string[]) || [];
           
           return (
             <div key={dateKey} className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
@@ -967,7 +978,7 @@ const EnvironmentTimeline: React.FC = () => {
                   // Find any deployment with this commit to show its details
                   let commitDisplayData = null;
                   for (const env of environments) {
-                    const deployments = processedData[dateKey]?.[env.id] || [];
+                    const deployments = (processedData[dateKey]?.[env.id] as DeploymentData[]) || [];
                     const matchingDep = deployments.find(d => d.__commitId === commitId);
                     if (matchingDep) {
                       commitDisplayData = matchingDep;
@@ -995,8 +1006,8 @@ const EnvironmentTimeline: React.FC = () => {
                       {/* Environment cells */}
                       {environments.map((env) => {
                         // Get only deployments for this commit ID
-                        const commitDeployments = processedData[dateKey]?.[env.id]
-                          ?.filter(d => d.__commitId === commitId) || [];
+                        const commitDeployments = ((processedData[dateKey]?.[env.id] as DeploymentData[]) || [])
+                          .filter(d => d.__commitId === commitId);
                           
                         return (
                           <div key={`${dateKey}-${commitId}-${env.id}`} className="p-4">
@@ -1047,7 +1058,7 @@ const EnvironmentTimeline: React.FC = () => {
                   {/* Environment cells */}
                   {environments.map((env) => (
                     <div key={`${dateKey}-content-${env.id}`} className="p-4">
-                      {processedData[dateKey]?.[env.id]?.map((deployment, index) => (
+                      {((processedData[dateKey]?.[env.id] as DeploymentData[]) || []).map((deployment, index) => (
                         <TimelineCard
                           key={`${deployment.tag}-${index}`}
                           deployment={deployment}
