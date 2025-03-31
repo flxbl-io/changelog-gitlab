@@ -3,15 +3,14 @@
 import { useEffect } from 'react';
 import ChangelogForm from '../../components/ChangelogForm';
 
-export default function Page() {
-  // Clear envview-specific session storage when navigating to changelog
+export default function ChangelogPage() {
+  // Clear any session storage flags that might interfere with navigation
   useEffect(() => {
-    // Clear the auto-connect flag when navigating to a different page
-    if (sessionStorage.getItem("envview_auto_connect_attempted")) {
-      console.log("Changelog page: Clearing envview connection flags");
-      sessionStorage.removeItem("envview_auto_connect_attempted");
-      sessionStorage.removeItem("envview_connect_timestamp");
-    }
+    // Remove all session flags that could cause issues
+    sessionStorage.removeItem("envview_auto_connect_attempted");
+    sessionStorage.removeItem("envview_connect_timestamp");
+    sessionStorage.removeItem("navigated_from_envview");
+    sessionStorage.removeItem("changelog_cards_fetch_id");
   }, []);
   
   return (

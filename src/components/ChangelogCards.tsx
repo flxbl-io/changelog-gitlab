@@ -242,74 +242,51 @@ const ChangelogCards: React.FC = () => {
   }, [projectId, gitlabHost, jiraRegex]);
 
   useEffect(() => {
-    // In envview, load data without triggering auto-connect
-    const isEnvView = typeof window !== 'undefined' && 
-      window.location.pathname.includes('/envview');
-      
-    if (isEnvView) {
-      // Don't auto-connect in envview page, just load card data
-      const storedCards = localStorage.getItem("cards");
-      const storedJiraHost = localStorage.getItem("jiraHost");
-      const storedJiraRegex = localStorage.getItem("jiraRegex");
-      const storedRepository = localStorage.getItem("repository");
-      const storedGitlabHost = localStorage.getItem("gitlabHost");
-      const storedProjectId = localStorage.getItem("projectId");
-      const storedProjectPath = localStorage.getItem("projectPath");
-  
-      if (storedCards) {
-        const parsedCards = JSON.parse(storedCards);
-        setCards(parsedCards.length > 0 ? parsedCards : initialCards);
-      } else {
-        setCards(initialCards);
-      }
-      if (storedJiraHost) setJiraHost(storedJiraHost);
-      if (storedJiraRegex) setJiraRegex(storedJiraRegex);
-      if (storedRepository) setRepository(storedRepository);
-      if (storedGitlabHost) setGitlabHost(storedGitlabHost);
-      if (storedProjectId) {
-        // Important: set project ID last since it triggers data fetch
-        setProjectId(parseInt(storedProjectId));
-      }
-      if (storedProjectPath) setProjectPath(storedProjectPath);
-      
-      // Delay setting isLoading to false slightly to ensure projectId is set
-      setTimeout(() => {
-        console.log("Envview data loading completed, fetching data...");
-        setIsLoading(false);
-      }, 100);
-    } else {
-      // Normal behavior for other pages
-      loadStoredData();
-    }
-  }, [loadStoredData]);
+    // Load stored data from localStorage
+    const storedCards = localStorage.getItem("cards");
+    const storedJiraHost = localStorage.getItem("jiraHost");
+    const storedJiraRegex = localStorage.getItem("jiraRegex");
+    const storedRepository = localStorage.getItem("repository");
+    const storedGitlabHost = localStorage.getItem("gitlabHost");
+    const storedProjectId = localStorage.getItem("projectId");
+    const storedProjectPath = localStorage.getItem("projectPath");
 
-  // New function to fetch data for all cards in parallel
+    // Load cards
+    if (storedCards) {
+      const parsedCards = JSON.parse(storedCards);
+      console.log(`Loaded cards:`, parsedCards);
+      setCards(parsedCards.length > 0 ? parsedCards : initialCards);
+    } else {
+      setCards(initialCards);
+    }
+    
+    // Load other settings
+    if (storedJiraHost) setJiraHost(storedJiraHost);
+    if (storedJiraRegex) setJiraRegex(storedJiraRegex);
+    if (storedRepository) setRepository(storedRepository);
+    if (storedGitlabHost) setGitlabHost(storedGitlabHost);
+    if (storedProjectPath) setProjectPath(storedProjectPath);
+    
+    // Set project ID last (since it might trigger data fetching)
+    if (storedProjectId) {
+      console.log("Setting project ID:", storedProjectId);
+      setProjectId(parseInt(storedProjectId));
+    }
+    
+    // Mark loading as complete
+    setIsLoading(false);
+  }, []);
+
+  // Simplified function to fetch data for all cards in parallel
   const batchFetchAllCards = useCallback(async () => {
-    // Don't fetch if we're not mounted or don't have a project ID
     if (!projectId) {
-      setError("Please connect to a repository first");
+      console.error("Cannot fetch cards: No project ID available");
       return;
     }
     
-    // Create a request ID to track this specific fetch request
-    const requestId = Date.now().toString();
-    console.log(`Starting batch fetch with request ID: ${requestId}`);
+    console.log(`Fetching data for ${cards.length} cards...`);
     
-    // Store the current request ID
-    const prevRequestId = sessionStorage.getItem("changelog_cards_fetch_id");
-    if (prevRequestId && Date.now() - parseInt(prevRequestId) < 1000) {
-      console.log(`Skipping fetch, previous fetch was too recent (${Date.now() - parseInt(prevRequestId)}ms ago)`);
-      return;
-    }
-    
-    // Clear any existing timeout to avoid race conditions
-    if (window._fetchTimeoutId) {
-      clearTimeout(window._fetchTimeoutId);
-    }
-    
-    sessionStorage.setItem("changelog_cards_fetch_id", requestId);
-    console.log(`Starting batch fetch with ID ${requestId} for ${cards.length} cards`);
-    
+    // Set all cards to loading state
     setCards(prevCards => 
       prevCards.map(card => ({ ...card, isLoading: true }))
     );
@@ -423,48 +400,29 @@ const ChangelogCards: React.FC = () => {
   // Keep track of fetches to prevent duplicates
   const hasFetchedRef = useRef(false);
   
+  // Simple fetching logic - fetch when we have a project ID and aren't loading
   useEffect(() => {
-    console.log("Fetch effect triggered. Loading:", isLoading, "ProjectID:", projectId, "Already fetched:", hasFetchedRef.current);
+    console.log("Fetch effect check - Loading:", isLoading, "ProjectID:", projectId);
     
+    // Only proceed if we have a project ID and loading is complete
     if (isLoading || !projectId) {
-      return; // Don't fetch if still loading or no project ID
+      return;
     }
     
-    // Handle navigation state for envview
-    const isEnvView = typeof window !== 'undefined' && window.location.pathname.includes('/envview');
-    const didNavigate = sessionStorage.getItem("navigated_from_envview") === "true";
+    console.log("Initial fetch triggered with projectId:", projectId);
     
-    // Reset fetch flag after navigation or when project ID changes
-    if ((isEnvView && didNavigate) || (isEnvView && projectId && hasFetchedRef.current)) {
-      console.log("Resetting fetch flag - Navigation detected or project ID changed");
-      hasFetchedRef.current = false;
-      
-      // If we navigated back to envview, also clear the changelog fetch ID
-      if (didNavigate) {
-        console.log("Navigation detected, clearing fetch ID");
-        sessionStorage.removeItem("changelog_cards_fetch_id");
-      }
-    }
+    // Initial fetch
+    batchFetchAllCards();
     
-    if (!hasFetchedRef.current) {
-      console.log("Initial batch fetch triggered with projectId:", projectId);
-      hasFetchedRef.current = true;
-      
-      // Short timeout to ensure all state updates have been processed
-      window._fetchTimeoutId = setTimeout(() => {
-        console.log("Executing scheduled batch fetch");
-        batchFetchAllCards();
-      }, 100);
-      
-      // Set up interval for subsequent fetches
-      const interval = setInterval(() => {
-        console.log("Interval batch fetch triggered");
-        batchFetchAllCards();
-      }, 10 * 60 * 1000); // 10 minutes
-      
-      return () => clearInterval(interval);
-    }
-  }, [isLoading, batchFetchAllCards, projectId]);
+    // Set up interval for refreshing data
+    const refreshInterval = setInterval(() => {
+      console.log("Refresh interval triggered");
+      batchFetchAllCards();
+    }, 5 * 60 * 1000); // Every 5 minutes
+    
+    // Clean up interval on unmount
+    return () => clearInterval(refreshInterval);
+  }, [isLoading, projectId, batchFetchAllCards]);
 
   const handleDeleteCard = useCallback((cardId: string) => {
     setCards(prevCards => {
