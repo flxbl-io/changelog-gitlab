@@ -11,21 +11,52 @@ export default function Page() {
   const hasConnectedRef = useRef(false);
   
   // Ensure we have a connection to the repository
+  // When component mounts, check if we need to clear navigation flags
+  useEffect(() => {
+    // Get navigated from flag
+    const navigatedFrom = sessionStorage.getItem("navigated_from_envview");
+    
+    // If we navigated back to envview, clean up navigation flags
+    if (navigatedFrom === "true") {
+      console.log("Returned to envview, clearing navigation flags");
+      sessionStorage.removeItem("navigated_from_envview");
+    }
+    
+    // Clean up function to run when component unmounts
+    return () => {
+      console.log("Envview unmounting, setting navigation flag");
+      sessionStorage.setItem("navigated_from_envview", "true");
+    };
+  }, []);
+
   useEffect(() => {
     // Check for auto-connection flag to prevent refresh loops
     const autoConnectFlag = sessionStorage.getItem("envview_auto_connect_attempted");
     
-    // Only run the connection logic once per session AND once per component mount
-    if (autoConnectFlag === "true" || hasConnectedRef.current) {
-      console.log("Skipping auto-connect, already attempted");
-      
-      // If we already have a stored project ID, just update the connection state
-      const storedProjectId = localStorage.getItem("projectId");
-      if (storedProjectId && connectionState !== "connected") {
-        setConnectionState("connected");
-      }
-      
+    // Only run the connection logic once per component mount
+    if (hasConnectedRef.current) {
+      console.log("Skipping auto-connect, already attempted in this component instance");
       return;
+    }
+    
+    // If we have a flag set but are in a new component instance, allow connection
+    if (autoConnectFlag === "true") {
+      const lastConnectTime = sessionStorage.getItem("envview_connect_timestamp");
+      const now = Date.now();
+      const timeSinceLastConnect = lastConnectTime ? now - parseInt(lastConnectTime) : Infinity;
+      
+      // Only skip if connected recently (within last minute)
+      if (timeSinceLastConnect < 60000) {
+        console.log(`Skipping auto-connect, last attempt was ${Math.round(timeSinceLastConnect/1000)}s ago`);
+        
+        // If we already have a stored project ID, just update the connection state
+        const storedProjectId = localStorage.getItem("projectId");
+        if (storedProjectId && connectionState !== "connected") {
+          setConnectionState("connected");
+        }
+        
+        return;
+      }
     }
     
     // Mark that we've tried to connect in this component instance

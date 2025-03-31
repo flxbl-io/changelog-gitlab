@@ -8,6 +8,13 @@ import ChangelogCardDetails from "./ChangelogCardDetails";
 import InfoCardStreamlined from "./InfoCardStreamlined";
 import { Card, TicketInfoState } from "@/model/models";
 
+// Extend Window interface to include our fetch timeout ID
+declare global {
+  interface Window {
+    _fetchTimeoutId?: NodeJS.Timeout;
+  }
+}
+
 const initialCards: Card[] = [
   {
     id: "1",
@@ -259,10 +266,17 @@ const ChangelogCards: React.FC = () => {
       if (storedJiraRegex) setJiraRegex(storedJiraRegex);
       if (storedRepository) setRepository(storedRepository);
       if (storedGitlabHost) setGitlabHost(storedGitlabHost);
-      if (storedProjectId) setProjectId(parseInt(storedProjectId));
+      if (storedProjectId) {
+        // Important: set project ID last since it triggers data fetch
+        setProjectId(parseInt(storedProjectId));
+      }
       if (storedProjectPath) setProjectPath(storedProjectPath);
       
-      setIsLoading(false);
+      // Delay setting isLoading to false slightly to ensure projectId is set
+      setTimeout(() => {
+        console.log("Envview data loading completed, fetching data...");
+        setIsLoading(false);
+      }, 100);
     } else {
       // Normal behavior for other pages
       loadStoredData();
@@ -283,21 +297,39 @@ const ChangelogCards: React.FC = () => {
     
     // Store the current request ID
     const prevRequestId = sessionStorage.getItem("changelog_cards_fetch_id");
-    if (prevRequestId && Date.now() - parseInt(prevRequestId) < 2000) {
+    if (prevRequestId && Date.now() - parseInt(prevRequestId) < 1000) {
       console.log(`Skipping fetch, previous fetch was too recent (${Date.now() - parseInt(prevRequestId)}ms ago)`);
       return;
     }
     
+    // Clear any existing timeout to avoid race conditions
+    if (window._fetchTimeoutId) {
+      clearTimeout(window._fetchTimeoutId);
+    }
+    
     sessionStorage.setItem("changelog_cards_fetch_id", requestId);
+    console.log(`Starting batch fetch with ID ${requestId} for ${cards.length} cards`);
     
     setCards(prevCards => 
       prevCards.map(card => ({ ...card, isLoading: true }))
     );
 
     try {
-      // Create an array of promises for all cards
+      // Create an array of promises for all cards with valid from/to commits
       const fetchPromises = cards.map(async (card) => {
-        const { id, fromCommit, toCommit } = card;
+        const { id, fromCommit, toCommit, name } = card;
+        
+        // Skip cards without proper commit references
+        if (!fromCommit || !toCommit) {
+          console.log(`Skipping fetch for card ${id} (${name}) - missing commit references`);
+          return { 
+            id, 
+            success: false, 
+            message: "Missing commit references"
+          };
+        }
+        
+        console.log(`Fetching data for card ${id} (${name}): ${fromCommit} to ${toCommit}`);
         
         try {
           const [commitResponse, ticketResponse] = await Promise.all([
@@ -332,6 +364,8 @@ const ChangelogCards: React.FC = () => {
             commitResponse.json(),
             ticketResponse.json(),
           ]);
+          
+          console.log(`Fetched ${commitData.commits.length} commits for card ${id} (${name})`);
 
           return {
             id,
@@ -340,8 +374,8 @@ const ChangelogCards: React.FC = () => {
             success: true
           };
         } catch (error) {
-          console.error(`Error fetching data for card ${id}:`, error);
-          return { id, success: false };
+          console.error(`Error fetching data for card ${id} (${name}):`, error);
+          return { id, success: false, message: String(error) };
         }
       });
 
@@ -390,10 +424,37 @@ const ChangelogCards: React.FC = () => {
   const hasFetchedRef = useRef(false);
   
   useEffect(() => {
-    if (!isLoading && projectId && !hasFetchedRef.current) {
-      console.log("Initial batch fetch triggered");
+    console.log("Fetch effect triggered. Loading:", isLoading, "ProjectID:", projectId, "Already fetched:", hasFetchedRef.current);
+    
+    if (isLoading || !projectId) {
+      return; // Don't fetch if still loading or no project ID
+    }
+    
+    // Handle navigation state for envview
+    const isEnvView = typeof window !== 'undefined' && window.location.pathname.includes('/envview');
+    const didNavigate = sessionStorage.getItem("navigated_from_envview") === "true";
+    
+    // Reset fetch flag after navigation or when project ID changes
+    if ((isEnvView && didNavigate) || (isEnvView && projectId && hasFetchedRef.current)) {
+      console.log("Resetting fetch flag - Navigation detected or project ID changed");
+      hasFetchedRef.current = false;
+      
+      // If we navigated back to envview, also clear the changelog fetch ID
+      if (didNavigate) {
+        console.log("Navigation detected, clearing fetch ID");
+        sessionStorage.removeItem("changelog_cards_fetch_id");
+      }
+    }
+    
+    if (!hasFetchedRef.current) {
+      console.log("Initial batch fetch triggered with projectId:", projectId);
       hasFetchedRef.current = true;
-      batchFetchAllCards();
+      
+      // Short timeout to ensure all state updates have been processed
+      window._fetchTimeoutId = setTimeout(() => {
+        console.log("Executing scheduled batch fetch");
+        batchFetchAllCards();
+      }, 100);
       
       // Set up interval for subsequent fetches
       const interval = setInterval(() => {
