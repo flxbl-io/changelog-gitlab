@@ -152,9 +152,16 @@ const ChangelogCards: React.FC = () => {
 
     // Auto-connect to repository if we have stored project info
     if (storedProjectId && storedGitlabHost) {
+      setProjectId(parseInt(storedProjectId));
+      setProjectPath(storedProjectPath || '');
       fetchTagsAndBranches(storedGitlabHost, parseInt(storedProjectId));
     } else if (storedGitlabHost && storedRepository) {
-      connectToRepository();
+      // Check if we're already trying to connect from the parent component
+      const isConnectingFromParent = sessionStorage.getItem("envview_auto_connect_attempted") === "true";
+      
+      if (!isConnectingFromParent) {
+        connectToRepository();
+      }
     }
 
     setIsLoading(false);
