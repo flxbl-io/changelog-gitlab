@@ -17,6 +17,15 @@ interface Commit {
   message: string;
 }
 
+interface CacheItem {
+  timestamp: number;
+  data: Commit[];
+}
+
+// Cache settings
+const cache: { [key: string]: CacheItem } = {};
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === 'POST') {
     const { 
@@ -31,6 +40,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     try {
+      // Generate cache key based on parameters
+      const cacheKey = `${gitlabHost}-${projectId}-${fromCommit}-${toCommit}`;
+      const now = Date.now();
+      const cachedItem = cache[cacheKey];
+
+      if (cachedItem && now - cachedItem.timestamp < CACHE_DURATION) {
+        // Return cached data if it's less than 5 minutes old
+        console.log(`Returning cached commits for ${cacheKey}`);
+        return res.status(200).json({ commits: cachedItem.data, cached: true });
+      }
+
       console.log(`Fetching commits via GitLab API for project ${projectId}`);
       
       // Create the comparison URL - use comparison endpoint when we have both refs
@@ -56,7 +76,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           message: commit.title
         }));
 
-      res.status(200).json({ commits });
+      // Update cache
+      cache[cacheKey] = {
+        timestamp: now,
+        data: commits
+      };
+
+      res.status(200).json({ commits, cached: false });
     } catch (error) {
       console.error('Error fetching commits:', error);
       res.status(500).json({ error: 'Error fetching commits. Please check your inputs and try again.' });

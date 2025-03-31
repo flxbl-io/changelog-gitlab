@@ -231,27 +231,116 @@ const ChangelogCards: React.FC = () => {
     loadStoredData();
   }, [loadStoredData]);
 
+  // New function to fetch data for all cards in parallel
+  const batchFetchAllCards = useCallback(async () => {
+    if (!projectId) {
+      setError("Please connect to a repository first");
+      return;
+    }
+
+    setCards(prevCards => 
+      prevCards.map(card => ({ ...card, isLoading: true }))
+    );
+
+    try {
+      // Create an array of promises for all cards
+      const fetchPromises = cards.map(async (card) => {
+        const { id, fromCommit, toCommit } = card;
+        
+        try {
+          const [commitResponse, ticketResponse] = await Promise.all([
+            fetch("/api/getCommits", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ 
+                fromCommit, 
+                toCommit, 
+                gitlabHost, 
+                projectId 
+              }),
+            }),
+            fetch("/api/getTickets", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ 
+                fromCommit, 
+                toCommit, 
+                gitlabHost, 
+                projectId, 
+                jiraRegex 
+              }),
+            }),
+          ]);
+
+          if (!commitResponse.ok || !ticketResponse.ok) {
+            throw new Error("Failed to fetch data");
+          }
+
+          const [commitData, ticketData] = await Promise.all([
+            commitResponse.json(),
+            ticketResponse.json(),
+          ]);
+
+          return {
+            id,
+            commits: commitData.commits,
+            ticketInfo: ticketData.ticketInfo,
+            success: true
+          };
+        } catch (error) {
+          console.error(`Error fetching data for card ${id}:`, error);
+          return { id, success: false };
+        }
+      });
+
+      // Wait for all fetches to complete
+      const results = await Promise.all(fetchPromises);
+
+      // Update all cards at once with the results
+      setCards(prevCards => {
+        const updatedCards = [...prevCards];
+        
+        results.forEach(result => {
+          if (result.success) {
+            const index = updatedCards.findIndex(c => c.id === result.id);
+            if (index !== -1) {
+              updatedCards[index] = {
+                ...updatedCards[index],
+                commits: result.commits,
+                ticketInfo: result.ticketInfo,
+                isLoading: false
+              };
+            }
+          } else {
+            const index = updatedCards.findIndex(c => c.id === result.id);
+            if (index !== -1) {
+              updatedCards[index] = {
+                ...updatedCards[index],
+                isLoading: false
+              };
+            }
+          }
+        });
+        
+        return updatedCards;
+      });
+      
+      setLastUpdated(new Date());
+    } catch (error) {
+      console.error("Error in batch fetch:", error);
+      setCards(prevCards => 
+        prevCards.map(card => ({ ...card, isLoading: false }))
+      );
+    }
+  }, [cards, gitlabHost, jiraRegex, projectId]);
+
   useEffect(() => {
     if (!isLoading && projectId) {
-      const updateAllCards = () => {
-        setCards(prevCards => {
-          prevCards.forEach((card) => {
-            if (!card.isLoading) {
-              fetchCardData(card);
-            }
-          });
-          return prevCards;
-        });
-        setLastUpdated(new Date());
-      };
-
-      updateAllCards();
-
-      const interval = setInterval(updateAllCards, 10 * 60 * 1000); // 10 minutes
-
+      batchFetchAllCards();
+      const interval = setInterval(batchFetchAllCards, 10 * 60 * 1000); // 10 minutes
       return () => clearInterval(interval);
     }
-  }, [isLoading, fetchCardData, projectId]);
+  }, [isLoading, batchFetchAllCards, projectId]);
 
   const handleDeleteCard = useCallback((cardId: string) => {
     setCards(prevCards => {
