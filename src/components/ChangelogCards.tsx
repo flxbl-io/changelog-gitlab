@@ -279,21 +279,39 @@ const ChangelogCards: React.FC = () => {
 
   // Simplified function to fetch data for all cards in parallel
   const batchFetchAllCards = useCallback(async () => {
+    // Safe access to current state values through function form
     if (!projectId) {
       console.error("Cannot fetch cards: No project ID available");
       return;
     }
     
-    console.log(`Fetching data for ${cards.length} cards...`);
+    // To prevent infinite loops, check if we've recently fetched
+    const lastFetchTime = sessionStorage.getItem("changelog_cards_last_fetch_time");
+    const now = Date.now();
     
-    // Set all cards to loading state
-    setCards(prevCards => 
-      prevCards.map(card => ({ ...card, isLoading: true }))
-    );
+    if (lastFetchTime && now - parseInt(lastFetchTime) < 5000) { // 5 second cooldown
+      console.log(`Skipping fetch, last fetch was too recent (${now - parseInt(lastFetchTime)}ms ago)`);
+      return;
+    }
+    
+    // Record this fetch attempt
+    sessionStorage.setItem("changelog_cards_last_fetch_time", now.toString());
+    
+    console.log(`Fetching data for cards at ${new Date().toISOString()}...`);
+    
+    // Set all cards to loading state - use function form to reference latest state
+    setCards(prevCards => {
+      console.log(`Setting ${prevCards.length} cards to loading state`);
+      return prevCards.map(card => ({ ...card, isLoading: true }));
+    });
 
     try {
+      // Get current cards state
+      const currentCards = [...cards];
+      console.log(`Processing ${currentCards.length} cards`);
+      
       // Create an array of promises for all cards with valid from/to commits
-      const fetchPromises = cards.map(async (card) => {
+      const fetchPromises = currentCards.map(async (card) => {
         const { id, fromCommit, toCommit, name } = card;
         
         // Skip cards without proper commit references
@@ -395,12 +413,29 @@ const ChangelogCards: React.FC = () => {
         prevCards.map(card => ({ ...card, isLoading: false }))
       );
     }
-  }, [cards, gitlabHost, jiraRegex, projectId]);
+  }, [projectId]);
 
   // Keep track of fetches to prevent duplicates
   const hasFetchedRef = useRef(false);
   
-  // Simple fetching logic - fetch when we have a project ID and aren't loading
+  // Memoized callback to prevent re-renders
+  const fetchDataWithDelay = useCallback(() => {
+    // Only fetch if we have a project ID
+    if (!projectId) return;
+    
+    console.log(`Scheduled data fetch for projectId: ${projectId}`);
+    batchFetchAllCards();
+  }, [projectId, batchFetchAllCards]);
+  
+  // Use a stable reference to the fetchDataWithDelay function
+  const fetchDataRef = useRef(fetchDataWithDelay);
+  
+  // Update the ref when the callback changes
+  useEffect(() => {
+    fetchDataRef.current = fetchDataWithDelay;
+  }, [fetchDataWithDelay]);
+    
+  // Simple fetching logic - run only once when we get projectId
   useEffect(() => {
     console.log("Fetch effect check - Loading:", isLoading, "ProjectID:", projectId);
     
@@ -411,18 +446,33 @@ const ChangelogCards: React.FC = () => {
     
     console.log("Initial fetch triggered with projectId:", projectId);
     
-    // Initial fetch
-    batchFetchAllCards();
+    // Use a flag to track if we've already fetched data
+    const hasFetched = sessionStorage.getItem("changelog_cards_batch_fetched");
     
-    // Set up interval for refreshing data
-    const refreshInterval = setInterval(() => {
-      console.log("Refresh interval triggered");
-      batchFetchAllCards();
-    }, 5 * 60 * 1000); // Every 5 minutes
-    
-    // Clean up interval on unmount
-    return () => clearInterval(refreshInterval);
-  }, [isLoading, projectId, batchFetchAllCards]);
+    if (hasFetched !== "true") {
+      // Set the flag to prevent duplicate fetches
+      sessionStorage.setItem("changelog_cards_batch_fetched", "true");
+      
+      // Wait a short time to ensure all state is updated
+      const timeoutId = setTimeout(() => {
+        fetchDataRef.current();
+      }, 500);
+      
+      // Set up interval for refreshing data (using the ref to avoid stale closures)
+      const refreshInterval = setInterval(() => {
+        console.log("Refresh interval triggered");
+        fetchDataRef.current();
+      }, 300000); // Every 5 minutes
+      
+      return () => {
+        clearTimeout(timeoutId);
+        clearInterval(refreshInterval);
+        console.log("Fetch effect cleanup");
+      };
+    } else {
+      console.log("Skipping fetch - already fetched in this session");
+    }
+  }, [isLoading, projectId]);
 
   const handleDeleteCard = useCallback((cardId: string) => {
     setCards(prevCards => {

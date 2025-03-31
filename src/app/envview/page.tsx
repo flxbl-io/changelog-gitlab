@@ -54,8 +54,10 @@ export default function EnvViewPage() {
     }
     
     // Clear any previous session storage that might interfere
+    // This ensures we get a fresh start on this page
     sessionStorage.removeItem("envview_auto_connect_attempted");
     sessionStorage.removeItem("changelog_cards_fetch_id");
+    sessionStorage.removeItem("changelog_cards_batch_fetched");
     
     // Connect to repository
     ensureRepositoryConnection();

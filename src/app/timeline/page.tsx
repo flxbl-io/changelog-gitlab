@@ -11,6 +11,8 @@ export default function TimelinePage() {
     sessionStorage.removeItem("envview_connect_timestamp");
     sessionStorage.removeItem("navigated_from_envview");
     sessionStorage.removeItem("changelog_cards_fetch_id");
+    sessionStorage.removeItem("changelog_cards_batch_fetched");
+    sessionStorage.removeItem("changelog_cards_last_fetch_time");
   }, []);
   
   return (
