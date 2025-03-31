@@ -87,11 +87,25 @@ const EnvironmentTimeline: React.FC = () => {
     { id: 'prod-val', display: 'PROD - VAL', name: 'PROD', jobType: 'VAL' },
   ];
   
-  // Define leader configurations
-  const leaderConfigs = {
+  // Define leader configurations - made configurable
+  const [leaderConfigs, setLeaderConfigs] = useState<Record<string, string[]>>({
     'sit1': ['sit1-val', 'sit1-dep', 'staging-dep', 'prod-val'],
     'sit2': ['sit2-val', 'sit2-dep', 'staging-dep', 'prod-val']
-  };
+  });
+  
+  // Load leader configurations from localStorage
+  useEffect(() => {
+    const storedLeaderConfigs = localStorage.getItem("leaderConfigs");
+    if (storedLeaderConfigs) {
+      try {
+        const parsedConfigs = JSON.parse(storedLeaderConfigs);
+        setLeaderConfigs(parsedConfigs);
+        console.log("Loaded leader configurations:", parsedConfigs);
+      } catch (e) {
+        console.error("Failed to parse stored leader configurations:", e);
+      }
+    }
+  }, []);
   
   // Filter environments based on selected leader
   const environments = allEnvironments.filter(env => 
@@ -480,6 +494,97 @@ const EnvironmentTimeline: React.FC = () => {
 
   const dates = generateDateRange();
 
+  // State for leader config editing
+  const [isEditing, setIsEditing] = useState(false);
+  const [editingLeader, setEditingLeader] = useState<string>('');
+  const [selectedEnvironments, setSelectedEnvironments] = useState<string[]>([]);
+  
+  // Function to open the editor
+  const handleEditLeaderConfig = (leader: string) => {
+    setEditingLeader(leader);
+    setSelectedEnvironments([...leaderConfigs[leader]]);
+    setIsEditing(true);
+  };
+  
+  // Function to save the edited configuration
+  const handleSaveConfig = () => {
+    const newConfigs = {
+      ...leaderConfigs,
+      [editingLeader]: selectedEnvironments
+    };
+    
+    setLeaderConfigs(newConfigs);
+    localStorage.setItem("leaderConfigs", JSON.stringify(newConfigs));
+    setIsEditing(false);
+    
+    // Refresh the data with the new configuration
+    fetchTimelineData();
+  };
+  
+  // Function to delete a leader configuration
+  const handleDeleteLeader = () => {
+    if (Object.keys(leaderConfigs).length <= 1) {
+      alert('Cannot delete the last leader configuration');
+      return;
+    }
+    
+    // Confirm deletion
+    if (!confirm(`Are you sure you want to delete the "${editingLeader}" configuration?`)) {
+      return;
+    }
+    
+    // Create new configs without the deleted leader
+    const newConfigs = { ...leaderConfigs };
+    delete newConfigs[editingLeader];
+    
+    setLeaderConfigs(newConfigs);
+    localStorage.setItem("leaderConfigs", JSON.stringify(newConfigs));
+    setIsEditing(false);
+    
+    // Update the selected leader if needed
+    if (selectedLeader === editingLeader) {
+      const firstLeader = Object.keys(newConfigs)[0];
+      setSelectedLeader(firstLeader);
+      localStorage.setItem("selectedLeader", firstLeader);
+    }
+    
+    // Refresh the data with the new configuration
+    fetchTimelineData();
+  };
+  
+  // Function to toggle environment selection
+  const toggleEnvironment = (envId: string) => {
+    if (selectedEnvironments.includes(envId)) {
+      setSelectedEnvironments(selectedEnvironments.filter(id => id !== envId));
+    } else {
+      setSelectedEnvironments([...selectedEnvironments, envId]);
+    }
+  };
+  
+  // State for new leader creation
+  const [isCreating, setIsCreating] = useState(false);
+  const [newLeaderName, setNewLeaderName] = useState('');
+  
+  // Function to create a new leader configuration
+  const handleCreateLeader = () => {
+    if (!newLeaderName || newLeaderName.trim() === '') return;
+    
+    // Create the new leader with no environments selected
+    const newConfigs = {
+      ...leaderConfigs,
+      [newLeaderName.toLowerCase()]: []
+    };
+    
+    setLeaderConfigs(newConfigs);
+    localStorage.setItem("leaderConfigs", JSON.stringify(newConfigs));
+    setSelectedLeader(newLeaderName.toLowerCase());
+    setIsCreating(false);
+    setNewLeaderName('');
+    
+    // Immediately open the editor for the new leader
+    handleEditLeaderConfig(newLeaderName.toLowerCase());
+  };
+  
   return (
     <div className="container mx-auto p-4">
       {/* Controls */}
@@ -491,9 +596,22 @@ const EnvironmentTimeline: React.FC = () => {
             value={selectedLeader}
             onChange={(e) => handleLeaderChange(e.target.value)}
           >
-            <option value="sit1">SIT1</option>
-            <option value="sit2">SIT2</option>
+            {Object.keys(leaderConfigs).map(leader => (
+              <option key={leader} value={leader}>{leader.toUpperCase()}</option>
+            ))}
           </select>
+          <button 
+            onClick={() => handleEditLeaderConfig(selectedLeader)}
+            className="ml-2 px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded-md text-sm"
+          >
+            Edit
+          </button>
+          <button 
+            onClick={() => setIsCreating(true)}
+            className="ml-2 px-3 py-2 bg-green-100 hover:bg-green-200 rounded-md text-sm text-green-800"
+          >
+            New
+          </button>
         </div>
         
         <div className="flex items-center">
@@ -514,6 +632,89 @@ const EnvironmentTimeline: React.FC = () => {
           </label>
         </div>
       </div>
+      
+      {/* Leader Config Editor Modal */}
+      {isEditing && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-md">
+            <h3 className="text-lg font-semibold mb-4">Configure {editingLeader.toUpperCase()} Environments</h3>
+            <div className="space-y-2 mb-6">
+              {allEnvironments.map(env => (
+                <label key={env.id} className="flex items-center p-2 hover:bg-gray-100 rounded">
+                  <input
+                    type="checkbox"
+                    className="mr-3 h-4 w-4 text-blue-600"
+                    checked={selectedEnvironments.includes(env.id)}
+                    onChange={() => toggleEnvironment(env.id)}
+                  />
+                  <span>{env.display}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex justify-between">
+              <button
+                onClick={handleDeleteLeader}
+                className="px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-700"
+                disabled={Object.keys(leaderConfigs).length <= 1}
+              >
+                Delete
+              </button>
+              
+              <div className="flex space-x-3">
+                <button
+                  onClick={() => setIsEditing(false)}
+                  className="px-4 py-2 border border-gray-300 rounded-md"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveConfig}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                  disabled={selectedEnvironments.length === 0}
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* New Leader Modal */}
+      {isCreating && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-md">
+            <h3 className="text-lg font-semibold mb-4">Create New Leader Configuration</h3>
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Leader Name
+              </label>
+              <input
+                type="text"
+                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={newLeaderName}
+                onChange={(e) => setNewLeaderName(e.target.value)}
+                placeholder="Enter a name (e.g. uat, prod, dev)"
+              />
+            </div>
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={() => setIsCreating(false)}
+                className="px-4 py-2 border border-gray-300 rounded-md"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateLeader}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                disabled={!newLeaderName || newLeaderName.trim() === ''}
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* Environment Headers */}
       <div className={`grid gap-4 mb-6`} 
