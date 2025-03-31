@@ -172,20 +172,56 @@ const EnvironmentTimeline: React.FC = () => {
     setProcessedData(processed);
   };
 
+  const connectToRepository = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch('/api/getRepository', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gitlabHost, repository }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to connect to repository');
+      }
+
+      const data = await response.json();
+      
+      // Store in localStorage
+      localStorage.setItem("projectId", data.projectId.toString());
+      localStorage.setItem("projectPath", data.projectPath);
+      
+      return data.projectId;
+    } catch (error) {
+      console.error('Error connecting to repository:', error);
+      setError("Error connecting to repository. Please check your GitLab host and repository path.");
+      return null;
+    }
+  };
+
   const fetchTimelineData = async () => {
     setLoading(true);
     setError(null);
     try {
-      // Get stored projectId from localStorage, or ask user to connect to repository first
-      const storedProjectId = localStorage.getItem("projectId");
+      // Get stored projectId from localStorage, or connect to repository first
+      let storedProjectId = localStorage.getItem("projectId");
+      let projectId: number;
       
       if (!storedProjectId) {
-        setError('Please connect to a repository first from the Changelog Generator page');
-        setLoading(false);
-        return;
+        console.log('No stored project ID found, attempting to connect to repository');
+        const newProjectId = await connectToRepository();
+        if (!newProjectId) {
+          setError('Failed to connect to repository. Please check settings and try again.');
+          setLoading(false);
+          return;
+        }
+        projectId = newProjectId;
+      } else {
+        projectId = parseInt(storedProjectId);
       }
-      
-      const projectId = parseInt(storedProjectId);
       
       const promises = environments.map(env =>
         fetch('/api/getTimeline', {

@@ -50,9 +50,12 @@ const initialCards: Card[] = [
 const ChangelogCards: React.FC = () => {
   const [jiraHost, setJiraHost] = useState("jira.apps.ndis.gov.au");
   const [repository, setRepository] = useState("ocio/salesforce/pace-sf");
-  const [gitlabHost, setGitlabHost] = useState("gitlab.apps.ndia.gov.au/");
+  const [gitlabHost, setGitlabHost] = useState("gitlab.apps.ndia.gov.au");
   const [jiraRegex, setJiraRegex] = useState("(PSS-d+)|(P2B-d+)|(DIPMO-d+)|(P2CL-d+)|(GPO-d+)|(CS-d+)|(OCM-d+)|(OCM-d+)|(TS-d+)|");
-  const [directory, setDirectory] = useState("/home/azlam/projects/pace-sf-server");
+  
+  const [projectId, setProjectId] = useState<number | null>(null);
+  const [projectPath, setProjectPath] = useState<string | null>(null);
+  const [isConnecting, setIsConnecting] = useState(false);
 
   const [error, setError] = useState("");
   const [tagsAndBranches, setTagsAndBranches] = useState<string[]>([]);
@@ -62,11 +65,76 @@ const ChangelogCards: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
+  const connectToRepository = async () => {
+    setIsConnecting(true);
+    setError("");
+    
+    try {
+      const response = await fetch('/api/getRepository', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gitlabHost, repository }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to connect to repository');
+      }
+
+      const data = await response.json();
+      setProjectId(data.projectId);
+      setProjectPath(data.projectPath);
+      
+      // Store in localStorage
+      localStorage.setItem("projectId", data.projectId.toString());
+      localStorage.setItem("projectPath", data.projectPath);
+      
+      // Now fetch tags using GitLab API
+      await fetchTagsAndBranches(gitlabHost, data.projectId);
+      
+    } catch (error) {
+      console.error('Error connecting to repository:', error);
+      setError("Error connecting to repository. Please check your GitLab host and repository path.");
+    }
+    
+    setIsConnecting(false);
+  };
+
+  const fetchTagsAndBranches = async (host: string, id: number) => {
+    if (!id || !host) return;
+    
+    try {
+      // Fetch tags
+      const tagsResponse = await fetch('/api/getTags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          gitlabHost: host,
+          projectId: id
+        }),
+      });
+      
+      if (!tagsResponse.ok) {
+        const errorData = await tagsResponse.json();
+        throw new Error(errorData.error || 'Error fetching tags');
+      }
+      
+      const tagsData = await tagsResponse.json();
+      setTagsAndBranches(tagsData.tagsAndBranches || []);
+    } catch (error) {
+      console.error('Error fetching refs from GitLab API:', error);
+      setError("Error fetching tags and branches from GitLab. Please check your connection and try again.");
+    }
+  };
+
   const loadStoredData = useCallback(() => {
     const storedCards = localStorage.getItem("cards");
     const storedJiraHost = localStorage.getItem("jiraHost");
     const storedJiraRegex = localStorage.getItem("jiraRegex");
     const storedRepository = localStorage.getItem("repository");
+    const storedGitlabHost = localStorage.getItem("gitlabHost");
+    const storedProjectId = localStorage.getItem("projectId");
+    const storedProjectPath = localStorage.getItem("projectPath");
 
     if (storedCards) {
       const parsedCards = JSON.parse(storedCards);
@@ -78,6 +146,16 @@ const ChangelogCards: React.FC = () => {
     if (storedJiraHost) setJiraHost(storedJiraHost);
     if (storedJiraRegex) setJiraRegex(storedJiraRegex);
     if (storedRepository) setRepository(storedRepository);
+    if (storedGitlabHost) setGitlabHost(storedGitlabHost);
+    if (storedProjectId) setProjectId(parseInt(storedProjectId));
+    if (storedProjectPath) setProjectPath(storedProjectPath);
+
+    // Auto-connect to repository if we have stored project info
+    if (storedProjectId && storedGitlabHost) {
+      fetchTagsAndBranches(storedGitlabHost, parseInt(storedProjectId));
+    } else if (storedGitlabHost && storedRepository) {
+      connectToRepository();
+    }
 
     setIsLoading(false);
   }, []);
@@ -85,27 +163,38 @@ const ChangelogCards: React.FC = () => {
   const fetchCardData = useCallback(async (card: Card) => {
     const { id, fromCommit, toCommit } = card;
 
+    if (!projectId) {
+      setError("Please connect to a repository first");
+      return;
+    }
+
     console.log(`Fetching data for card:`, card);
     setCards(prevCards =>
       prevCards.map(c => (c.id === id ? { ...c, isLoading: true } : c))
     );
 
     try {
-      const [tagResponse,commitResponse, ticketResponse] = await Promise.all([
-        fetch("/api/getTags", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ directory }),
-        }),
+      const [commitResponse, ticketResponse] = await Promise.all([
         fetch("/api/getCommits", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fromCommit, toCommit, directory }),
+          body: JSON.stringify({ 
+            fromCommit, 
+            toCommit, 
+            gitlabHost, 
+            projectId 
+          }),
         }),
         fetch("/api/getTickets", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fromCommit, toCommit, directory, jiraRegex }),
+          body: JSON.stringify({ 
+            fromCommit, 
+            toCommit, 
+            gitlabHost, 
+            projectId, 
+            jiraRegex 
+          }),
         }),
       ]);
 
@@ -118,8 +207,6 @@ const ChangelogCards: React.FC = () => {
         ticketResponse.json(),
       ]);
 
-      console.log (`comm`,commitResponse);
-      console.log (`tocket`,ticketResponse);
       setCards(prevCards =>
         prevCards.map(c =>
           c.id === id
@@ -138,14 +225,14 @@ const ChangelogCards: React.FC = () => {
         prevCards.map(c => (c.id === id ? { ...c, isLoading: false } : c))
       );
     }
-  }, [directory, jiraRegex]);
+  }, [projectId, gitlabHost, jiraRegex]);
 
   useEffect(() => {
     loadStoredData();
   }, [loadStoredData]);
 
   useEffect(() => {
-    if (!isLoading) {
+    if (!isLoading && projectId) {
       const updateAllCards = () => {
         setCards(prevCards => {
           prevCards.forEach((card) => {
@@ -164,7 +251,7 @@ const ChangelogCards: React.FC = () => {
 
       return () => clearInterval(interval);
     }
-  }, [isLoading, fetchCardData]);
+  }, [isLoading, fetchCardData, projectId]);
 
   const handleDeleteCard = useCallback((cardId: string) => {
     setCards(prevCards => {
@@ -224,10 +311,27 @@ const ChangelogCards: React.FC = () => {
     <div className="container mx-auto p-4">
       <h1 className="text-3xl font-bold mb-6">Pending MRs to Environments</h1>
 
+      <div className="mb-6">
+        {!projectId ? (
+          <div className="bg-yellow-100 border border-yellow-400 text-yellow-700 p-4 rounded mb-4">
+            <p>No repository connected. Connecting to repository...</p>
+            <div className="mt-2">
+              <ProgressBar isLoading={isConnecting} />
+            </div>
+          </div>
+        ) : (
+          <div className="bg-green-100 border border-green-400 text-green-700 p-4 rounded mb-4">
+            <p>✓ Connected to Project ID: {projectId}</p>
+            <p className="text-sm">Repository: {projectPath}</p>
+          </div>
+        )}
+      </div>
+
       <div className="mb-8">
         <button
           onClick={handleAddCard}
           className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded flex items-center"
+          disabled={!projectId}
         >
           <Plus className="mr-2" size={20} />
           Add a new Environment to Monitor
