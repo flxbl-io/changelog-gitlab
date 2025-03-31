@@ -131,38 +131,83 @@ const EnvironmentTimeline: React.FC = () => {
     leaderConfigs[selectedLeader as keyof typeof leaderConfigs].includes(env.id)
   );
   
-  // Handle leader selection change
+  // Handle leader selection change - completely rewritten for reliability
   const handleLeaderChange = (leader: string) => {
+    if (loading || isRefreshing || isLeaderChanging) {
+      console.log("Ignoring leader change while loading");
+      return; // Don't allow changes while loading
+    }
+    
+    console.log(`Switching leader to: ${leader}`);
+    
     // Set loading state for leader change
     setIsLeaderChanging(true);
     
-    // Update the leader selection
-    setSelectedLeader(leader);
+    // Save to local storage
     localStorage.setItem("selectedLeader", leader);
     
-    // The useEffect with [selectedLeader, alignByCommit] dependency will handle the data fetch
+    // Cache the current selection to use in the data fetch
+    const newLeader = leader;
+    
+    // Update the state using the callback pattern to ensure we get the latest state
+    setSelectedLeader(prevLeader => {
+      if (prevLeader === newLeader) {
+        console.log("Leader didn't actually change, aborting");
+        setIsLeaderChanging(false);
+        return prevLeader;
+      }
+      
+      // Clear session storage cache for the previous leader
+      sessionStorage.removeItem("timeline_data_cache");
+      
+      // We need to fetch new data for this leader
+      // This will be properly triggered by the useEffect with selectedLeader dependency
+      
+      return newLeader;
+    });
   };
   
-  // Handle alignment toggle
+  // Handle alignment toggle - completely rewritten for reliability
   const handleAlignToggle = () => {
-    // Show loading state
+    if (loading || isRefreshing || isLeaderChanging) {
+      console.log("Ignoring alignment toggle while loading");
+      return; // Don't allow changes while loading
+    }
+    
+    console.log("Toggling alignment mode");
+    
+    // Show loading state temporarily while we reprocess
     setIsLeaderChanging(true);
     
+    // Calculate new value - do this before the state update
     const newValue = !alignByCommit;
+    console.log(`Switching alignment mode to: ${newValue ? 'Commit View' : 'Date View'}`);
     
-    // We need to switch the value before processing
-    setAlignByCommit(newValue);
+    // Update local storage first
     localStorage.setItem("alignByCommit", String(newValue));
     
-    // If we already have data, just reprocess it with the new view mode
-    if (timelineData && Object.keys(timelineData).length > 0) {
+    // Use this approach to ensure the new state is available immediately
+    setAlignByCommit(prevMode => {
+      // Use the callback to get latest state
+      const updatedMode = !prevMode;
+      
+      // Schedule processing after state update is applied
       setTimeout(() => {
-        // Use timeout to ensure the alignByCommit state has updated
-        processTimelineData(timelineData);
+        if (timelineData && Object.keys(timelineData).length > 0) {
+          console.log("Re-processing existing data with new view mode");
+          // Here we use the updatedMode directly rather than the state variable
+          // to avoid closure issues
+          processTimelineData(timelineData, updatedMode);
+        } else {
+          console.log("No data available to reprocess");
+        }
+        
+        // Clear loading state after processing
         setIsLeaderChanging(false);
-      }, 100);
-    }
-    // Otherwise, useEffect will handle fetching new data
+      }, 50);
+      
+      return updatedMode;
+    });
   };
 
   const parseDate = (tag: string): Date => {
@@ -179,6 +224,32 @@ const EnvironmentTimeline: React.FC = () => {
     // Check if the date part has the expected format
     const dateTimeParts = datePart.split('-');
     if (dateTimeParts.length !== 2) {
+      // Try to handle single part date format as a fallback
+      console.warn(`Tag ${tag} doesn't have standard date-time format, attempting fallback parsing`);
+      
+      // If it's just a raw date string without time, try to parse it
+      if (datePart.length === 8) { // YYYYMMDD or DDMMYYYY
+        let year, month, day;
+        
+        // Try to detect format
+        if (/^20\d{2}/.test(datePart)) { // YYYYMMDD
+          year = parseInt(datePart.substring(0, 4));
+          month = parseInt(datePart.substring(4, 6)) - 1; // JS months are 0-indexed
+          day = parseInt(datePart.substring(6, 8));
+        } else { // DDMMYYYY
+          day = parseInt(datePart.substring(0, 2));
+          month = parseInt(datePart.substring(2, 4)) - 1; // JS months are 0-indexed
+          year = parseInt(datePart.substring(4, 8));
+        }
+        
+        // Basic validation to avoid invalid dates (e.g., month 13)
+        if (month < 0 || month > 11 || day < 1 || day > 31) {
+          throw new Error(`Invalid date values in tag: ${tag}`);
+        }
+        
+        return new Date(year, month, day);
+      }
+      
       throw new Error(`Invalid date-time format in tag: ${tag}`);
     }
     
@@ -212,6 +283,11 @@ const EnvironmentTimeline: React.FC = () => {
         second = parseInt(timePortion.substring(4, 6));
       }
       
+      // Basic validation to avoid invalid dates (e.g., month 13)
+      if (month < 0 || month > 11 || day < 1 || day > 31) {
+        throw new Error(`Invalid date values in tag: ${tag} (year=${year}, month=${month+1}, day=${day})`);
+      }
+      
       return new Date(year, month, day, hour, minute, second);
     } catch (error) {
       console.error(`Error parsing date from tag ${tag}:`, error);
@@ -235,7 +311,31 @@ const EnvironmentTimeline: React.FC = () => {
       // Generate keys in DDMM format
       dates.push(`${String(date.getDate()).padStart(2, '0')}${String(date.getMonth() + 1).padStart(2, '0')}`);
     }
-    return dates;
+    
+    // Sort dates chronologically (oldest to newest) for better display
+    const sortedDates = [...dates].sort((a, b) => {
+      // Convert DDMM to comparable format
+      // Add current year to make the comparison valid
+      const yearStr = new Date().getFullYear().toString();
+      
+      // Create dates for comparison (using current year)
+      const dateA = new Date(
+        parseInt(yearStr),
+        parseInt(a.substring(2, 4)) - 1, // Month is 0-indexed
+        parseInt(a.substring(0, 2))
+      );
+      
+      const dateB = new Date(
+        parseInt(yearStr),
+        parseInt(b.substring(2, 4)) - 1, // Month is 0-indexed
+        parseInt(b.substring(0, 2))
+      );
+      
+      // Sort descending (newest first)
+      return dateB.getTime() - dateA.getTime();
+    });
+    
+    return sortedDates;
   };
 
   const formatDate = (date: Date): string => {
@@ -257,16 +357,19 @@ const EnvironmentTimeline: React.FC = () => {
     environments: Record<string, DeploymentData[]>;
   }
 
-  const processTimelineData = (data: TimelineData) => {
+  const processTimelineData = (data: TimelineData, useCommitView?: boolean) => {
     // Skip processing if there's no data
     if (!data || Object.keys(data).length === 0) {
       console.log("No data to process in processTimelineData");
       return;
     }
     
-    console.log(`Processing timeline data with ${Object.keys(data).length} environments, alignByCommit=${alignByCommit}`);
+    // Determine view mode - use parameter if provided, otherwise use state
+    const useCommitAlignment = useCommitView !== undefined ? useCommitView : alignByCommit;
     
-    if (alignByCommit) {
+    console.log(`Processing timeline data with ${Object.keys(data).length} environments, alignByCommit=${useCommitAlignment}`);
+    
+    if (useCommitAlignment) {
       // For commit alignment with date grouping
       // First, collect all deployments by commit ID
       const commitMap: Record<string, CommitAlignedData> = {};
@@ -386,56 +489,176 @@ const EnvironmentTimeline: React.FC = () => {
       
       setProcessedData(processed);
     } else {
-      // Traditional date-based processing
+      // Traditional date-based processing - completely rewritten and improved
+      console.log("Using improved date-based processing with primary environment as source of truth");
       const processed: ProcessedData = {};
       
-      // Initialize all dates with empty arrays
-      generateDateRange().forEach(dateKey => {
-        processed[dateKey] = {};
-        environments.forEach(env => {
-          processed[dateKey][env.id] = [] as DeploymentData[];
-        });
+      // Get the first environment in the current leader config as the primary
+      // This is important because we want to use the primary environment's dates
+      const primaryEnvId = environments.length > 0 ? environments[0].id : null;
+      console.log(`Using primary environment: ${primaryEnvId}`);
+      
+      if (!primaryEnvId) {
+        console.warn("No environments found in leader configuration");
+        setProcessedData({});
+        return;
+      }
+      
+      // Create a map to store all deployment data keyed by environment and date
+      const deploymentsByEnv: Map<string, Map<string, DeploymentData[]>> = new Map();
+      
+      // Initialize map for each environment
+      environments.forEach(env => {
+        deploymentsByEnv.set(env.id, new Map<string, DeploymentData[]>());
       });
-  
-      // Fill in the deployments
-      Object.entries(data).forEach(([envId, envData]) => {
-        Object.entries(envData).forEach(([tag, deployment]) => {
-          // Validate tag format before processing
-          const tagParts = tag.split('_');
-          
-          // Check if tag has the expected format: ENV_TYPE_DATE-TIME
-          if (tagParts.length < 3) {
-            console.warn(`Skipping tag with invalid format: ${tag}`);
-            return;
-          }
-          
+      
+      // First, process all deployments from all environments and organize them by date
+      environments.forEach(env => {
+        if (!data[env.id]) return;
+        
+        const envDeployments = deploymentsByEnv.get(env.id)!;
+        
+        Object.entries(data[env.id]).forEach(([tag, deployment]) => {
           try {
+            // Validate the tag format
+            const tagParts = tag.split('_');
+            if (tagParts.length < 3) {
+              console.warn(`Skipping tag with invalid format: ${tag}`);
+              return;
+            }
+            
+            // Parse the date from the tag
             const date = parseDate(tag);
             const dateKey = getDateKey(date);
             
-            if (processed[dateKey]) {  // Only process if date is within our range
-              if (!processed[dateKey][envId]) {
-                processed[dateKey][envId] = [] as DeploymentData[];
-              }
-              (processed[dateKey][envId] as DeploymentData[]).push({
-                ...deployment,
-                tag,
-                date, // Keep original timestamp
-              });
+            // Create deployment data object
+            const deploymentData: DeploymentData = {
+              ...deployment,
+              tag,
+              date
+            };
+            
+            // Add to this environment's deployments by date
+            if (!envDeployments.has(dateKey)) {
+              envDeployments.set(dateKey, []);
             }
+            envDeployments.get(dateKey)!.push(deploymentData);
           } catch (error) {
-            console.warn(`Error processing tag ${tag}:`, error);
+            console.warn(`Error processing env ${env.id} tag ${tag}:`, error);
           }
+        });
+        
+        // Sort deployments for each date by time (newest first)
+        envDeployments.forEach((deployments, dateKey) => {
+          deployments.sort((a, b) => b.date.getTime() - a.date.getTime());
         });
       });
       
-      // Sort deployments within each date and environment by time
-      Object.keys(processed).forEach(dateKey => {
-        Object.keys(processed[dateKey]).forEach(envId => {
-          // Cast to DeploymentData[] to access date property
-          (processed[dateKey][envId] as DeploymentData[]).sort((a, b) => b.date.getTime() - a.date.getTime());
+      // Now, build the processed data structure based on primary environment dates
+      // This ensures we use the primary environment as the source of truth for dates
+      const primaryEnvDeployments = deploymentsByEnv.get(primaryEnvId);
+      if (!primaryEnvDeployments || primaryEnvDeployments.size === 0) {
+        console.warn("Primary environment has no deployments, using all visible dates");
+        
+        // Use date range as fallback if primary environment has no deployments
+        const dateRange = generateDateRange();
+        
+        // Include any date that has deployments in any environment
+        environments.forEach(env => {
+          const envDeployments = deploymentsByEnv.get(env.id);
+          if (!envDeployments) return;
+          
+          envDeployments.forEach((deployments, dateKey) => {
+            if (dateRange.includes(dateKey) && deployments.length > 0) {
+              if (!processed[dateKey]) {
+                processed[dateKey] = {};
+                environments.forEach(e => {
+                  processed[dateKey][e.id] = [] as DeploymentData[];
+                });
+              }
+              
+              // Add deployments for this environment
+              (processed[dateKey][env.id] as DeploymentData[]) = deployments;
+            }
+          });
         });
+      } else {
+        // Use primary environment dates as the authoritative set
+        // First, include all dates from the primary environment
+        primaryEnvDeployments.forEach((deployments, dateKey) => {
+          // Skip dates with no deployments in primary environment
+          if (deployments.length === 0) return;
+          
+          // Initialize this date in the processed data
+          processed[dateKey] = {};
+          environments.forEach(env => {
+            processed[dateKey][env.id] = [] as DeploymentData[];
+          });
+          
+          // Add primary environment deployments
+          (processed[dateKey][primaryEnvId] as DeploymentData[]) = deployments;
+          
+          // Add deployments from other environments for this date
+          environments.forEach(env => {
+            if (env.id === primaryEnvId) return; // Skip primary, already added
+            
+            const envDeployments = deploymentsByEnv.get(env.id);
+            if (!envDeployments) return;
+            
+            const dateDeployments = envDeployments.get(dateKey);
+            if (dateDeployments && dateDeployments.length > 0) {
+              (processed[dateKey][env.id] as DeploymentData[]) = dateDeployments;
+            }
+          });
+        });
+        
+        // Add recent dates from other environments even if primary doesn't have them
+        // This ensures we don't miss recent deployments in other environments
+        const recentDateRange = generateDateRange().slice(0, 3); // Last 3 days
+        environments.forEach(env => {
+          if (env.id === primaryEnvId) return; // Skip primary
+          
+          const envDeployments = deploymentsByEnv.get(env.id);
+          if (!envDeployments) return;
+          
+          recentDateRange.forEach(dateKey => {
+            const dateDeployments = envDeployments.get(dateKey);
+            if (dateDeployments && dateDeployments.length > 0) {
+              // Create this date entry if it doesn't exist yet
+              if (!processed[dateKey]) {
+                processed[dateKey] = {};
+                environments.forEach(e => {
+                  processed[dateKey][e.id] = [] as DeploymentData[];
+                });
+              }
+              
+              // Add deployments for this environment
+              (processed[dateKey][env.id] as DeploymentData[]) = dateDeployments;
+            }
+          });
+        });
+      }
+            
+      // Clean up the processed data to remove dates that don't have any deployments
+      // This ensures we only show dates that have actual data
+      Object.keys(processed).forEach(dateKey => {
+        let hasDeployments = false;
+        
+        // Check if any environment has deployments for this date
+        environments.forEach(env => {
+          const deployments = processed[dateKey][env.id] as DeploymentData[];
+          if (deployments && deployments.length > 0) {
+            hasDeployments = true;
+          }
+        });
+        
+        // If no deployments, remove this date from the processed data
+        if (!hasDeployments) {
+          delete processed[dateKey];
+        }
       });
+      
+      console.log(`Final processed data has ${Object.keys(processed).length} dates with deployments`);
       
       setProcessedData(processed);
     }
@@ -478,6 +701,22 @@ const EnvironmentTimeline: React.FC = () => {
   // State to track when leader is changing
   const [isLeaderChanging, setIsLeaderChanging] = useState(false);
   
+  // Helper function to reset the view state when things get stuck
+  const resetView = () => {
+    console.log("Resetting view state");
+    
+    // Reset all loading/state flags
+    setLoading(false);
+    setIsRefreshing(false);
+    setIsLeaderChanging(false);
+    
+    // If we have data but it's not showing correctly, reprocess it
+    if (timelineData && Object.keys(timelineData).length > 0) {
+      console.log("Reprocessing existing data");
+      processTimelineData(timelineData);
+    }
+  };
+
   // Function to force refresh data by clearing cache state
   const forceRefresh = () => {
     console.log("Forcing timeline data refresh");
@@ -505,20 +744,33 @@ const EnvironmentTimeline: React.FC = () => {
     fetchTimelineData(bypassServerCache);
   };
 
+  // Significantly improved fetch function with better state management
   const fetchTimelineData = async (forceBypass = false) => {
+    // Safety check - if we're already in a loading state and not forcing, just return
+    if ((loading || isRefreshing) && !forceBypass) {
+      console.log("Already loading data, skipping redundant fetch");
+      return;
+    }
+    
     // Check if we recently fetched data (to prevent unnecessary refetches on page refresh)
     // Skip the check if forceBypass is true
     if (!forceBypass) {
       const lastFetchTime = sessionStorage.getItem("timeline_last_fetch_time");
       const now = Date.now();
       
-      if (lastFetchTime && now - parseInt(lastFetchTime) < 60000) { // Within last minute
-        console.log(`Skipping fetch, last fetch was too recent (${now - parseInt(lastFetchTime)}ms ago)`);
+      // Use shorter cooldown (15 seconds) unless we're forcing
+      if (lastFetchTime && now - parseInt(lastFetchTime) < 15000) { // Within last 15 seconds
+        console.log(`Skipping fetch, last fetch was too recent (${Math.round((now - parseInt(lastFetchTime)) / 1000)}s ago)`);
+        // Still maintain UI state for consistency
+        setIsLeaderChanging(false);
         return;
       }
     }
     
-    // Record this fetch attempt
+    // If we get here, we're actually fetching
+    console.log(`Fetching timeline data for ${selectedLeader} environments (force=${forceBypass})`);
+    
+    // Record this fetch attempt with current timestamp
     sessionStorage.setItem("timeline_last_fetch_time", Date.now().toString());
     
     // Clear previous data when changing configurations
@@ -681,18 +933,12 @@ const EnvironmentTimeline: React.FC = () => {
     };
   }, []);
   
-  // Keep track of the previous leader value
-  const prevLeaderRef = useRef(selectedLeader);
-  
-  // Fetch data only when parameters change or on initial render
+  // Fetch data only when selectedLeader changes or on initial render
   useEffect(() => {
+    console.log(`Leader selection effect triggered: ${selectedLeader}`);
+    
     // Check if this is a page reload vs a parameter change
     const isInitialRender = !hasInitialFetchRef.current;
-    // Check if only the alignment changed or if the leader changed too
-    const isLeaderChange = prevLeaderRef.current !== selectedLeader;
-    
-    // Update the previous leader ref
-    prevLeaderRef.current = selectedLeader;
     
     if (isInitialRender) {
       console.log('Initial timeline data fetch');
@@ -705,26 +951,28 @@ const EnvironmentTimeline: React.FC = () => {
       } else {
         console.log('Already loaded from cache, skipping initial fetch');
       }
-    } else if (isLeaderChange) {
-      // Only fetch new data if the leader actually changed
-      console.log('Leader changed, fetching new data');
-      fetchTimelineData(false);
     } else {
-      // This is just a view mode change, already handled by handleAlignToggle
-      console.log('View mode changed, no need to refetch');
+      // This is a leader change, always fetch new data
+      console.log(`Leader changed to ${selectedLeader}, fetching new data`);
+      fetchTimelineData(false);
     }
     
     // Set up periodic refresh
     const interval = setInterval(() => {
-      console.log('Running scheduled timeline refresh');
-      fetchTimelineData(false);
+      // Avoid refreshing if another operation is in progress
+      if (!loading && !isRefreshing && !isLeaderChanging) {
+        console.log('Running scheduled timeline refresh');
+        fetchTimelineData(false);
+      } else {
+        console.log('Skipping scheduled refresh - another operation in progress');
+      }
     }, 15 * 60 * 1000); // Refresh every 15 minutes
     
     return () => {
       console.log('Clearing refresh interval');
       clearInterval(interval);
     };
-  }, [selectedLeader, alignByCommit]);
+  }, [selectedLeader]); // Only depend on leader changes, not view mode
 
   const TimelineCard: React.FC<{ deployment: DeploymentData; envDisplay: string }> = ({ deployment, envDisplay }) => {
     const hasMoreTickets = deployment.tickets.length > MAX_VISIBLE_ITEMS;
@@ -1021,7 +1269,18 @@ const EnvironmentTimeline: React.FC = () => {
           </label>
         </div>
         
-        <div className="flex items-center ml-auto">
+        <div className="flex items-center ml-auto gap-2">
+          {/* Reset View Button - always available */}
+          <button 
+            onClick={resetView}
+            className="flex items-center px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-md text-sm text-gray-800"
+            title="Reset view state without fetching new data"
+          >
+            <Clock className="mr-2 h-4 w-4" />
+            Reset View
+          </button>
+        
+          {/* Force Refresh Button */}
           <button 
             onClick={forceRefresh}
             className={`flex items-center px-3 py-2 ${loading || isRefreshing || isLeaderChanging ? 'bg-gray-200 cursor-not-allowed' : 'bg-blue-100 hover:bg-blue-200'} rounded-md text-sm ${loading || isRefreshing || isLeaderChanging ? 'text-gray-600' : 'text-blue-800'}`}
@@ -1031,9 +1290,12 @@ const EnvironmentTimeline: React.FC = () => {
             <RefreshCw className={`mr-2 h-4 w-4 ${loading || isRefreshing ? 'animate-spin' : ''}`} />
             {loading ? 'Loading...' : isRefreshing ? 'Server Refreshing...' : 'Refresh Data'}
           </button>
-          {isRefreshing && (
+          
+          {/* Loading status message */}
+          {(isRefreshing || isLeaderChanging) && (
             <div className="ml-2 text-xs text-amber-600">
-              Refresh in progress. This may take some time.
+              {isRefreshing ? 'Refresh in progress. This may take some time.' : 
+               isLeaderChanging ? 'Changing view configuration...' : ''}
             </div>
           )}
         </div>
@@ -1127,7 +1389,9 @@ const EnvironmentTimeline: React.FC = () => {
           style={{ 
             gridTemplateColumns: `1fr ${environments.map(() => '2fr').join(' ')}` 
           }}>
-        <div className="text-base font-medium text-gray-500">Date</div>
+        <div className="text-base font-medium text-gray-500">
+          {alignByCommit ? "Commit" : "Date"}
+        </div>
         {environments.map((env, envIndex) => (
           <div key={env.id} className={`${
             envIndex % 2 === 0 ? 'bg-blue-500' : 'bg-blue-600'
@@ -1179,8 +1443,9 @@ const EnvironmentTimeline: React.FC = () => {
                       style={{ 
                         gridTemplateColumns: `1fr ${environments.map(() => '2fr').join(' ')}` 
                       }}>
-                    <div className="p-4 font-medium text-gray-600">
-                      Commit
+                    <div className="p-4 font-medium text-gray-600 flex items-center">
+                      <GitCommit className="h-4 w-4 mr-2" />
+                      <span>Commit</span>
                     </div>
                     
                     {/* Environment headers */}
@@ -1219,6 +1484,7 @@ const EnvironmentTimeline: React.FC = () => {
                           }}>
                         {/* Commit ID cell */}
                         <div className="flex items-center p-4">
+                          <GitCommit className="h-4 w-4 mr-2 text-gray-600" />
                           <span className="text-sm font-mono bg-gray-100 p-1 rounded text-gray-800">
                             {commitId.substring(0, 8)}
                           </span>
@@ -1252,9 +1518,10 @@ const EnvironmentTimeline: React.FC = () => {
                     style={{ 
                       gridTemplateColumns: `1fr ${environments.map(() => '2fr').join(' ')}` 
                     }}>
-                  {/* Header cell - labels */}
-                  <div className="p-4 font-medium text-gray-600">
-                    Environments
+                  {/* Header cell */}
+                  <div className="p-4 font-medium text-gray-600 flex items-center">
+                    <span className="mr-2">⏱️</span>
+                    <span>Deployments</span>
                   </div>
                   
                   {/* Environment headers */}
