@@ -34,8 +34,53 @@ interface GitLabCommit {
   parent_ids: string[];
 }
 
-const cache: { [key: string]: { timestamp: number; data: DeploymentTimeline } } = {};
-const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds
+// Enhanced in-memory cache with more metadata
+interface CacheEntry {
+  timestamp: number;
+  data: DeploymentTimeline;
+  hitCount: number;
+  lastAccessed: number;
+  isRefreshing: boolean;
+  refreshStartTime?: number;
+}
+
+// Global cache storage (persists between API calls but not server restarts)
+const cache: { [key: string]: CacheEntry } = {};
+
+// Cache settings
+const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes for normal cache
+const LONG_CACHE_DURATION = 120 * 60 * 1000; // 2 hours for frequently accessed cache
+const REFRESH_TIMEOUT = 60 * 1000; // Consider a refresh operation stale after 60 seconds
+const MAX_CACHE_SIZE = 50; // Maximum number of entries to keep in cache
+const CACHE_CLEANUP_PROBABILITY = 0.1; // 10% chance to run cleanup on each request
+
+// Function to clean up old cache entries
+function cleanupCache() {
+  const cacheEntries = Object.entries(cache);
+  
+  // Exit early if cache isn't large enough to need cleanup
+  if (cacheEntries.length < MAX_CACHE_SIZE) {
+    return;
+  }
+  
+  console.log(`Cache cleanup triggered - entries: ${cacheEntries.length}`);
+  
+  // Sort entries by last accessed time (oldest first)
+  const sortedEntries = cacheEntries.sort(([, entryA], [, entryB]) => 
+    entryA.lastAccessed - entryB.lastAccessed
+  );
+  
+  // Remove entries until we're back under the limit
+  // Keep the most recently accessed entries
+  const entriesToRemove = sortedEntries.slice(0, sortedEntries.length - MAX_CACHE_SIZE);
+  
+  for (const [key] of entriesToRemove) {
+    console.log(`Removing old cache entry: ${key}`);
+    delete cache[key];
+  }
+  
+  console.log(`Cache cleanup complete - removed ${entriesToRemove.length} entries`);
+}
 
 // Fetch tags matching a specific pattern
 async function getDeploymentTags(
@@ -158,12 +203,18 @@ async function getTicketsAndMRs(
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === 'POST') {
+    // Randomly run cache cleanup to prevent memory leaks (10% probability)
+    if (Math.random() < CACHE_CLEANUP_PROBABILITY) {
+      cleanupCache();
+    }
+    
     const { 
       gitlabHost, 
       projectId, 
       environment, 
       jobType, 
-      jiraRegex 
+      jiraRegex,
+      forceRefresh = false  // New parameter to force refresh
     } = req.body;
 
     if (!gitlabHost || !projectId || !environment || !jobType || !jiraRegex) {
@@ -175,8 +226,70 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const cacheKey = `${gitlabHost}-${projectId}-${environment}-${jobType}-${jiraRegex}`;
     const now = Date.now();
 
-    if (cache[cacheKey] && now - cache[cacheKey].timestamp < CACHE_DURATION) {
-      return res.status(200).json({ timeline: cache[cacheKey].data, cached: true });
+    // Check for existing refresh operation
+    if (cache[cacheKey]?.isRefreshing) {
+      // Check if the refresh operation has timed out
+      const refreshStartTime = cache[cacheKey].refreshStartTime || 0;
+      const isRefreshStale = now - refreshStartTime > REFRESH_TIMEOUT;
+      
+      if (!isRefreshStale) {
+        console.log(`Refresh already in progress for ${environment}_${jobType}, returning cached data`);
+        // Return the existing cached data with a flag indicating refresh in progress
+        return res.status(200).json({ 
+          timeline: cache[cacheKey].data, 
+          cached: true,
+          refreshInProgress: true,
+          cacheAge: now - cache[cacheKey].timestamp,
+          hitCount: cache[cacheKey].hitCount
+        });
+      } else {
+        // Reset stale refresh flag
+        console.log(`Stale refresh detected for ${environment}_${jobType}, resetting`);
+        cache[cacheKey].isRefreshing = false;
+      }
+    }
+
+    // Check if we have a valid cache entry
+    if (cache[cacheKey] && !forceRefresh) {
+      // Update cache metadata regardless of whether we use it
+      cache[cacheKey].hitCount += 1;
+      cache[cacheKey].lastAccessed = now;
+      
+      // Determine cache validity - higher hit count gives longer validity
+      const effectiveCacheDuration = 
+        cache[cacheKey].hitCount > 5 ? LONG_CACHE_DURATION : CACHE_DURATION;
+      
+      // Check if the cache is still valid
+      if (now - cache[cacheKey].timestamp < effectiveCacheDuration) {
+        console.log(`Using cached timeline data for ${environment}_${jobType}, hit count: ${cache[cacheKey].hitCount}`);
+        return res.status(200).json({ 
+          timeline: cache[cacheKey].data, 
+          cached: true,
+          cacheAge: now - cache[cacheKey].timestamp,
+          hitCount: cache[cacheKey].hitCount
+        });
+      }
+      
+      console.log(`Cache expired for ${environment}_${jobType}, fetching fresh data`);
+    } else if (forceRefresh) {
+      console.log(`Force refresh requested for ${environment}_${jobType}`);
+    } else {
+      console.log(`No cache entry found for ${environment}_${jobType}, creating new entry`);
+    }
+    
+    // Set refresh lock to prevent concurrent refreshes
+    if (cache[cacheKey]) {
+      cache[cacheKey].isRefreshing = true;
+      cache[cacheKey].refreshStartTime = now;
+    } else {
+      cache[cacheKey] = {
+        timestamp: now,
+        data: {},
+        hitCount: 0,
+        lastAccessed: now,
+        isRefreshing: true,
+        refreshStartTime: now
+      };
     }
 
     try {
@@ -209,15 +322,53 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         );
       }
 
-      cache[cacheKey] = {
-        timestamp: now,
-        data: timeline
-      };
+      // Update the cache entry with new data and release the refresh lock
+      if (cache[cacheKey]) {
+        cache[cacheKey] = {
+          ...cache[cacheKey],
+          timestamp: now,
+          data: timeline,
+          lastAccessed: now,
+          isRefreshing: false,  // Release the lock
+          refreshStartTime: undefined
+        };
+        // Increment hit count only if it's an existing entry
+        cache[cacheKey].hitCount += 1;
+      } else {
+        // Create new entry
+        cache[cacheKey] = {
+          timestamp: now,
+          data: timeline,
+          hitCount: 1,
+          lastAccessed: now,
+          isRefreshing: false
+        };
+      }
 
-      res.status(200).json({ timeline, cached: false });
+      // Add cache control headers to help browser caching
+      res.setHeader('Cache-Control', 'max-age=300, stale-while-revalidate=600');
+      
+      // Return the data with cache information
+      res.status(200).json({ 
+        timeline, 
+        cached: false,
+        refreshCompleted: true,
+        cacheCreated: now,
+        cachedEntriesCount: Object.keys(cache).length 
+      });
     } catch (error) {
       console.error('Error retrieving deployment timeline:', error);
-      res.status(500).json({ error: 'Error retrieving deployment timeline' });
+      
+      // Release the refresh lock in case of error
+      if (cache[cacheKey]) {
+        cache[cacheKey].isRefreshing = false;
+        cache[cacheKey].refreshStartTime = undefined;
+      }
+      
+      res.status(500).json({ 
+        error: 'Error retrieving deployment timeline',
+        errorDetails: error instanceof Error ? error.message : String(error)
+      });
     }
   } else {
     res.setHeader('Allow', ['POST']);

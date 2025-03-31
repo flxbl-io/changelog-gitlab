@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useState, useEffect } from 'react';
-import { GitCommit, GitMerge, Tag, Clock, Ticket, ExternalLink, MoreHorizontal } from 'lucide-react';
+import { GitCommit, GitMerge, Tag, Clock, Ticket, ExternalLink, MoreHorizontal, RefreshCw } from 'lucide-react';
 import DeploymentModal from './DeploymentModal';
 
 interface TimelineItem {
@@ -387,7 +387,40 @@ const EnvironmentTimeline: React.FC = () => {
     }
   };
 
-  const fetchTimelineData = async () => {
+  // State to track if refresh is in progress on server
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  
+  // Function to force refresh data by clearing cache state
+  const forceRefresh = () => {
+    console.log("Forcing timeline data refresh");
+    // Clear the session storage cache
+    sessionStorage.removeItem("timeline_data_cache");
+    sessionStorage.removeItem("timeline_last_fetch_time");
+    // Clear state
+    setTimelineData({});
+    setProcessedData({});
+    // Trigger fetch with loading state
+    setLoading(true);
+    setIsRefreshing(true);
+    fetchTimelineData(true);
+  };
+
+  const fetchTimelineData = async (forceBypass = false) => {
+    // Check if we recently fetched data (to prevent unnecessary refetches on page refresh)
+    // Skip the check if forceBypass is true
+    if (!forceBypass) {
+      const lastFetchTime = sessionStorage.getItem("timeline_last_fetch_time");
+      const now = Date.now();
+      
+      if (lastFetchTime && now - parseInt(lastFetchTime) < 60000) { // Within last minute
+        console.log(`Skipping fetch, last fetch was too recent (${now - parseInt(lastFetchTime)}ms ago)`);
+        return;
+      }
+    }
+    
+    // Record this fetch attempt
+    sessionStorage.setItem("timeline_last_fetch_time", Date.now().toString());
+    
     // Clear previous data when changing configurations
     setTimelineData({});
     setProcessedData({});
@@ -421,17 +454,32 @@ const EnvironmentTimeline: React.FC = () => {
             projectId,
             environment: env.name,
             jobType: env.jobType,
-            jiraRegex
+            jiraRegex,
+            forceRefresh: forceBypass // Pass the force refresh flag to the API
           }),
         }).then(res => {
           if (!res.ok) {
             throw new Error(`Error fetching timeline for ${env.display}: ${res.status}`);
           }
           return res.json();
-        }).then(result => ({
-          envId: env.id,
-          data: result.timeline
-        }))
+        }).then(result => {
+          // Handle the refreshInProgress flag from the API
+          if (result.refreshInProgress) {
+            console.log(`Refresh in progress for ${env.display}, using cached data`);
+            setIsRefreshing(true);
+          }
+          
+          // Handle refresh completed flag
+          if (result.refreshCompleted) {
+            console.log(`Refresh completed for ${env.display}`);
+            setIsRefreshing(false);
+          }
+          
+          return {
+            envId: env.id,
+            data: result.timeline
+          };
+        })
       );
 
       const results = await Promise.all(promises);
@@ -440,20 +488,91 @@ const EnvironmentTimeline: React.FC = () => {
         return acc;
       }, {});
 
+      // Cache data in sessionStorage to avoid unnecessary fetches on navigation
+      try {
+        // Store the data and timestamp
+        const cacheEntry = {
+          data: newTimelineData,
+          timestamp: Date.now(),
+          leader: selectedLeader,
+          alignByCommit
+        };
+        sessionStorage.setItem("timeline_data_cache", JSON.stringify(cacheEntry));
+      } catch (e) {
+        console.warn("Failed to cache timeline data in sessionStorage:", e);
+      }
+
       setTimelineData(newTimelineData);
       processTimelineData(newTimelineData);
       console.log(`Fetched timeline data for ALL environments: ${allEnvironments.map(e => e.id).join(', ')}`);
     } catch (err) {
       setError('Failed to fetch timeline data: ' + (err instanceof Error ? err.message : String(err)));
       console.error(err);
+      // Reset refreshing state on error
+      setIsRefreshing(false);
     } finally {
       setLoading(false);
     }
   };
 
+  // Track if we've already fetched data in this session
+  const hasInitialFetchRef = useRef(false);
+  
+  // Load cached data on component initialization
+  // On mount, check for cached data
   useEffect(() => {
-    fetchTimelineData();
-    const interval = setInterval(fetchTimelineData, 10 * 60 * 1000); // Update every 10 minutes
+    // Check if we have cached data in sessionStorage
+    try {
+      const cachedDataStr = sessionStorage.getItem("timeline_data_cache");
+      if (cachedDataStr) {
+        const cachedData = JSON.parse(cachedDataStr);
+        
+        // Check if cache is for current settings
+        if (cachedData.leader === selectedLeader && 
+            cachedData.alignByCommit === alignByCommit) {
+          
+          // Check if cache is still fresh (within 15 minutes)
+          const cacheAge = Date.now() - cachedData.timestamp;
+          if (cacheAge < 15 * 60 * 1000) {
+            console.log(`Using cached timeline data (${Math.round(cacheAge / 1000)}s old)`);
+            setTimelineData(cachedData.data);
+            processTimelineData(cachedData.data);
+            hasInitialFetchRef.current = true;
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to load cached timeline data:", e);
+    }
+    
+    // On unmount, reset state
+    return () => {
+      // Reset the refreshing state when component unmounts
+      setIsRefreshing(false);
+    };
+  }, []);
+  
+  // Fetch data only when parameters change or on initial render
+  useEffect(() => {
+    // Check if this is a page reload vs a parameter change
+    const isInitialRender = !hasInitialFetchRef.current;
+    
+    if (isInitialRender) {
+      console.log('Initial timeline data fetch');
+      hasInitialFetchRef.current = true;
+      fetchTimelineData(false);
+    } else {
+      console.log('Timeline parameters changed, refetching data');
+      fetchTimelineData(false);
+    }
+    
+    // Set up periodic refresh
+    const interval = setInterval(() => {
+      console.log('Running scheduled timeline refresh');
+      fetchTimelineData(false);
+    }, 15 * 60 * 1000); // Refresh every 15 minutes
+    
     return () => clearInterval(interval);
   }, [selectedLeader, alignByCommit]);
 
@@ -690,6 +809,23 @@ const EnvironmentTimeline: React.FC = () => {
               {alignByCommit ? "Commit View (Default)" : "Date View"}
             </div>
           </label>
+        </div>
+        
+        <div className="flex items-center ml-auto">
+          <button 
+            onClick={forceRefresh}
+            className={`flex items-center px-3 py-2 ${loading || isRefreshing ? 'bg-gray-200 cursor-not-allowed' : 'bg-blue-100 hover:bg-blue-200'} rounded-md text-sm ${loading || isRefreshing ? 'text-gray-600' : 'text-blue-800'}`}
+            title={isRefreshing ? "Refresh already in progress" : "Force refresh data"}
+            disabled={loading || isRefreshing}
+          >
+            <RefreshCw className={`mr-2 h-4 w-4 ${loading || isRefreshing ? 'animate-spin' : ''}`} />
+            {loading ? 'Loading...' : isRefreshing ? 'Server Refreshing...' : 'Refresh Data'}
+          </button>
+          {isRefreshing && (
+            <div className="ml-2 text-xs text-amber-600">
+              Refresh in progress. This may take some time.
+            </div>
+          )}
         </div>
       </div>
       
