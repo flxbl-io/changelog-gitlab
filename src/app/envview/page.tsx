@@ -1,25 +1,40 @@
 "use client"
 
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import ChangelogCards from '@/components/ChangelogCards';
 
 export default function Page() {
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectionState, setConnectionState] = useState<"pending" | "connected" | "failed">("pending");
   
+  // Use a ref to track if we've already tried to connect in this component instance
+  const hasConnectedRef = useRef(false);
+  
   // Ensure we have a connection to the repository
   useEffect(() => {
     // Check for auto-connection flag to prevent refresh loops
     const autoConnectFlag = sessionStorage.getItem("envview_auto_connect_attempted");
     
-    // Only run the connection logic once per session
-    if (autoConnectFlag === "true") {
+    // Only run the connection logic once per session AND once per component mount
+    if (autoConnectFlag === "true" || hasConnectedRef.current) {
+      console.log("Skipping auto-connect, already attempted");
+      
+      // If we already have a stored project ID, just update the connection state
+      const storedProjectId = localStorage.getItem("projectId");
+      if (storedProjectId && connectionState !== "connected") {
+        setConnectionState("connected");
+      }
+      
       return;
     }
+    
+    // Mark that we've tried to connect in this component instance
+    hasConnectedRef.current = true;
     
     const connectToRepository = async () => {
       setIsConnecting(true);
       sessionStorage.setItem("envview_auto_connect_attempted", "true");
+      sessionStorage.setItem("envview_connect_timestamp", Date.now().toString());
       
       const storedProjectId = localStorage.getItem("projectId");
       
@@ -48,7 +63,6 @@ export default function Page() {
           console.log("Auto-connected to repository:", data.projectPath);
           
           setConnectionState("connected");
-          // Instead of forcing a refresh, we'll let React re-render
         } else {
           setConnectionState("failed");
         }

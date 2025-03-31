@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Edit2, Trash2, Plus } from "lucide-react";
 import ProgressBar from "./ProgressBar";
 import CardModal from "./CardModal";
@@ -271,11 +271,25 @@ const ChangelogCards: React.FC = () => {
 
   // New function to fetch data for all cards in parallel
   const batchFetchAllCards = useCallback(async () => {
+    // Don't fetch if we're not mounted or don't have a project ID
     if (!projectId) {
       setError("Please connect to a repository first");
       return;
     }
-
+    
+    // Create a request ID to track this specific fetch request
+    const requestId = Date.now().toString();
+    console.log(`Starting batch fetch with request ID: ${requestId}`);
+    
+    // Store the current request ID
+    const prevRequestId = sessionStorage.getItem("changelog_cards_fetch_id");
+    if (prevRequestId && Date.now() - parseInt(prevRequestId) < 2000) {
+      console.log(`Skipping fetch, previous fetch was too recent (${Date.now() - parseInt(prevRequestId)}ms ago)`);
+      return;
+    }
+    
+    sessionStorage.setItem("changelog_cards_fetch_id", requestId);
+    
     setCards(prevCards => 
       prevCards.map(card => ({ ...card, isLoading: true }))
     );
@@ -372,10 +386,21 @@ const ChangelogCards: React.FC = () => {
     }
   }, [cards, gitlabHost, jiraRegex, projectId]);
 
+  // Keep track of fetches to prevent duplicates
+  const hasFetchedRef = useRef(false);
+  
   useEffect(() => {
-    if (!isLoading && projectId) {
+    if (!isLoading && projectId && !hasFetchedRef.current) {
+      console.log("Initial batch fetch triggered");
+      hasFetchedRef.current = true;
       batchFetchAllCards();
-      const interval = setInterval(batchFetchAllCards, 10 * 60 * 1000); // 10 minutes
+      
+      // Set up interval for subsequent fetches
+      const interval = setInterval(() => {
+        console.log("Interval batch fetch triggered");
+        batchFetchAllCards();
+      }, 10 * 60 * 1000); // 10 minutes
+      
       return () => clearInterval(interval);
     }
   }, [isLoading, batchFetchAllCards, projectId]);
